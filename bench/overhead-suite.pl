@@ -28,8 +28,8 @@ die "--iters must be > 0\n" unless $iters > 0;
 die "--warmup must be >= 0\n" unless $warmup >= 0;
 
 my $root = File::Spec->rel2abs(File::Spec->catdir(File::Spec->curdir()));
-my $simp = File::Spec->catfile($root, 'simp.pl');
-die "Cannot find simp.pl at $simp\n" unless -f $simp;
+my $slup = File::Spec->catfile($root, 'slup.pl');
+die "Cannot find slup.pl at $slup\n" unless -f $slup;
 
 my $tmp = tempdir(CLEANUP => 1);
 
@@ -39,24 +39,24 @@ my $ones_depth = join(',', (1) x $depth);
 # ----------------------------------------------------------------------
 # Recursion vs loop
 # ----------------------------------------------------------------------
-my $rec_iter = File::Spec->catfile($tmp, 'rec-iter.simp');
-my $rec_fn = File::Spec->catfile($tmp, 'rec-fn.simp');
+my $rec_iter = File::Spec->catfile($tmp, 'rec-iter.slup');
+my $rec_fn = File::Spec->catfile($tmp, 'rec-fn.slup');
 
 write_program(
     $rec_iter,
-    <<"SIMP"
+    <<"SLUP"
 set \@nums = [$ones_depth]
 set \$sum = 0
 foreach \$n \@nums
   set \$sum = add(\$sum, \$n)
 end
 print(\$sum)
-SIMP
+SLUP
 );
 
 write_program(
     $rec_fn,
-    <<"SIMP"
+    <<"SLUP"
 sub rec(\$n)
   if lt(\$n, 1)
     return(0)
@@ -64,31 +64,31 @@ sub rec(\$n)
   return(add(1, rec(sub(\$n, 1))))
 end
 print(rec($depth))
-SIMP
+SLUP
 );
 
-my $rec_base = bench_case('rec-baseline(loop)', $simp, [], $rec_iter, $warmup, $iters);
-my $rec_with = bench_case('recursion(calls)', $simp, [], $rec_fn, $warmup, $iters);
+my $rec_base = bench_case('rec-baseline(loop)', $slup, [], $rec_iter, $warmup, $iters);
+my $rec_with = bench_case('recursion(calls)', $slup, [], $rec_fn, $warmup, $iters);
 
 # ----------------------------------------------------------------------
 # Local sub call vs module-qualified call
 # ----------------------------------------------------------------------
-my $mod_file = File::Spec->catfile($tmp, 'benchmod.simp');
-my $mod_local = File::Spec->catfile($tmp, 'mod-local.simp');
-my $mod_qual = File::Spec->catfile($tmp, 'mod-qualified.simp');
+my $mod_file = File::Spec->catfile($tmp, 'benchmod.slup');
+my $mod_local = File::Spec->catfile($tmp, 'mod-local.slup');
+my $mod_qual = File::Spec->catfile($tmp, 'mod-qualified.slup');
 
 write_program(
     $mod_file,
-    <<"SIMP"
+    <<"SLUP"
 sub inc(\$x)
   return(add(\$x, 1))
 end
-SIMP
+SLUP
 );
 
 write_program(
     $mod_local,
-    <<"SIMP"
+    <<"SLUP"
 sub inc(\$x)
   return(add(\$x, 1))
 end
@@ -98,12 +98,12 @@ foreach \$n \@nums
   set \$sum = add(\$sum, inc(\$n))
 end
 print(\$sum)
-SIMP
+SLUP
 );
 
 write_program(
     $mod_qual,
-    <<"SIMP"
+    <<"SLUP"
 load("benchmod")
 set \@nums = [$ones_calls]
 set \$sum = 0
@@ -111,31 +111,31 @@ foreach \$n \@nums
   set \$sum = add(\$sum, benchmod/inc(\$n))
 end
 print(\$sum)
-SIMP
+SLUP
 );
 
-my $mod_base = bench_case('local-sub-calls', $simp, [], $mod_local, $warmup, $iters);
-my $mod_with = bench_case('module/sub-calls', $simp, [], $mod_qual, $warmup, $iters);
+my $mod_base = bench_case('local-sub-calls', $slup, [], $mod_local, $warmup, $iters);
+my $mod_with = bench_case('module/sub-calls', $slup, [], $mod_qual, $warmup, $iters);
 
 # ----------------------------------------------------------------------
 # strict-globals overhead
 # ----------------------------------------------------------------------
-my $strict_prog = File::Spec->catfile($tmp, 'strict-globals.simp');
+my $strict_prog = File::Spec->catfile($tmp, 'strict-globals.slup');
 
 write_program(
     $strict_prog,
-    <<"SIMP"
+    <<"SLUP"
 global \$SUM default("0")
 set \@nums = [$ones_calls]
 foreach \$n \@nums
   set \$SUM = add(\$SUM, \$n)
 end
 print(\$SUM)
-SIMP
+SLUP
 );
 
-my $strict_base = bench_case('globals(no-strict)', $simp, [], $strict_prog, $warmup, $iters);
-my $strict_with = bench_case('globals(strict)', $simp, ['--strict-globals'], $strict_prog, $warmup, $iters);
+my $strict_base = bench_case('globals(no-strict)', $slup, [], $strict_prog, $warmup, $iters);
+my $strict_with = bench_case('globals(strict)', $slup, ['--strict-globals'], $strict_prog, $warmup, $iters);
 
 print "\nrecursion benchmark (depth=$depth)\n";
 print_table($rec_base, $rec_with, $depth);
@@ -169,14 +169,14 @@ sub write_program {
 }
 
 sub bench_case {
-    my ($name, $simp_path, $flags, $path, $warmup_runs, $runs) = @_;
+    my ($name, $slup_path, $flags, $path, $warmup_runs, $runs) = @_;
     for (1 .. $warmup_runs) {
-        run_program($simp_path, $flags, $path);
+        run_program($slup_path, $flags, $path);
     }
     my $sum = 0;
     for (1 .. $runs) {
         my $t0 = time();
-        run_program($simp_path, $flags, $path);
+        run_program($slup_path, $flags, $path);
         $sum += (time() - $t0);
     }
     return {
@@ -186,8 +186,8 @@ sub bench_case {
 }
 
 sub run_program {
-    my ($simp_path, $flags, $path) = @_;
-    my @cmd = ('perl', $simp_path, @$flags, $path);
+    my ($slup_path, $flags, $path) = @_;
+    my @cmd = ('perl', $slup_path, @$flags, $path);
     my $pid = fork();
     die "fork failed: $!\n" unless defined $pid;
     if ($pid == 0) {

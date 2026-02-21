@@ -5,7 +5,7 @@ use File::Spec;
 use File::Temp qw(tempfile);
 
 # ============================================================
-#  simp — a simple scripting language interpreter in Perl
+#  slup — a simple scripting language interpreter in Perl
 # ============================================================
 
 # --- Variable store ---
@@ -340,12 +340,12 @@ sub resolve_load_path {
     require File::Spec;
     my @candidates;
     push @candidates, $file;
-    push @candidates, "$file.simp" if $file !~ /\.[^\/\\]+$/;
+    push @candidates, "$file.slup" if $file !~ /\.[^\/\\]+$/;
 
     my $base_dir = $module_dirs{$current_module} // '.';
     if (!File::Spec->file_name_is_absolute($file)) {
         push @candidates, File::Spec->catfile($base_dir, $file);
-        push @candidates, File::Spec->catfile($base_dir, "$file.simp")
+        push @candidates, File::Spec->catfile($base_dir, "$file.slup")
             if $file !~ /\.[^\/\\]+$/;
     }
 
@@ -492,12 +492,12 @@ sub resolve_load_path_from_file {
     require File::Basename;
     my @candidates;
     push @candidates, $target;
-    push @candidates, "$target.simp" if $target !~ /\.[^\/\\]+$/;
+    push @candidates, "$target.slup" if $target !~ /\.[^\/\\]+$/;
 
     if (!File::Spec->file_name_is_absolute($target)) {
         my $base_dir = File::Basename::dirname($from_file);
         push @candidates, File::Spec->catfile($base_dir, $target);
-        push @candidates, File::Spec->catfile($base_dir, "$target.simp")
+        push @candidates, File::Spec->catfile($base_dir, "$target.slup")
             if $target !~ /\.[^\/\\]+$/;
     }
 
@@ -1419,6 +1419,7 @@ sub exec_node {
         if ($arrname =~ /^($MODULE_NAME_RE)\/($SYMBOL_NAME_RE)$/) {
             my ($module, $name) = ($1, $2);
             if (is_global_name($name)) {
+                require_declared_global($name, "line $line_no", 'read');
                 $arr = $global_arrays{$name} // [];
             } else {
                 die "Invalid local array name '\@$name' (locals must be lowercase)\n"
@@ -1427,6 +1428,7 @@ sub exec_node {
             }
         } else {
             if (is_global_name($arrname)) {
+                require_declared_global($arrname, "line $line_no", 'read');
                 $arr = $global_arrays{$arrname} // [];
             } else {
                 die "Invalid local array name '\@$arrname' (locals must be lowercase)\n"
@@ -1477,7 +1479,7 @@ while (@ARGV && $ARGV[0] =~ /^--/) {
 }
 
 if ($check_mode) {
-    die "Usage: simp.pl --check <file>\n" unless @ARGV;
+    die "Usage: slup.pl --check <file>\n" unless @ARGV;
     my $ok = run_static_check($ARGV[0]);
     exit($ok ? 0 : 1);
 }

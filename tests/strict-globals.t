@@ -7,7 +7,7 @@ use File::Temp qw(tempdir);
 use FindBin qw($Bin);
 use File::Spec;
 
-my $simp = File::Spec->catfile($Bin, '..', 'simp.pl');
+my $slup = File::Spec->catfile($Bin, '..', 'slup.pl');
 
 sub write_text {
     my ($path, $content) = @_;
@@ -20,7 +20,7 @@ sub write_text {
 
 sub run_strict {
     my ($path) = @_;
-    my $cmd = qq{perl "$simp" --strict-globals "$path" 2>&1};
+    my $cmd = qq{perl "$slup" --strict-globals "$path" 2>&1};
     my $out = `$cmd`;
     my $status = $? >> 8;
     return ($status, $out);
@@ -28,67 +28,108 @@ sub run_strict {
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.simp'), <<'SIMP');
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
 global $DB_HOST required
 $DB_HOST = "localhost"
 print($DB_HOST)
-SIMP
-    my ($status, $out) = run_strict(File::Spec->catfile($dir, 'main.simp'));
+SLUP
+    my ($status, $out) = run_strict(File::Spec->catfile($dir, 'main.slup'));
     is($status, 0, 'strict mode allows declared global assignment');
     is($out, "localhost\n", 'declared global reads successfully in strict mode');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.simp'), <<'SIMP');
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
 $UNDECLARED = "x"
-SIMP
-    my ($status, $out) = run_strict(File::Spec->catfile($dir, 'main.simp'));
+SLUP
+    my ($status, $out) = run_strict(File::Spec->catfile($dir, 'main.slup'));
     ok($status != 0, 'strict mode rejects undeclared global assignment');
     like($out, qr/undeclared global assignment/, 'strict assignment error is clear');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.simp'), <<'SIMP');
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
 global $DECLARED default("ok")
 print($MISSING)
-SIMP
-    my ($status, $out) = run_strict(File::Spec->catfile($dir, 'main.simp'));
+SLUP
+    my ($status, $out) = run_strict(File::Spec->catfile($dir, 'main.slup'));
     ok($status != 0, 'strict mode rejects undeclared global read');
     like($out, qr/undeclared global read/, 'strict read error is clear');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.simp'), <<'SIMP');
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
 global $DB_PORT default("5432")
 print($DB_PORT)
-SIMP
-    my ($status, $out) = run_strict(File::Spec->catfile($dir, 'main.simp'));
+SLUP
+    my ($status, $out) = run_strict(File::Spec->catfile($dir, 'main.slup'));
     is($status, 0, 'strict mode applies default for declared global');
     is($out, "5432\n", 'declared default is available at runtime');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.simp'), <<'SIMP');
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
 print(len(@ARGS))
 print(gt(len(dict-keys(%ENV)), 0))
-SIMP
-    my ($status, $out) = run_strict(File::Spec->catfile($dir, 'main.simp'));
+SLUP
+    my ($status, $out) = run_strict(File::Spec->catfile($dir, 'main.slup'));
     is($status, 0, 'strict mode predeclares @ARGS and %ENV');
     is($out, "0\n1\n", 'built-in globals remain usable in strict mode');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.simp'), <<'SIMP');
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+foreach $x @UNDECLARED
+  print($x)
+end
+SLUP
+    my ($status, $out) = run_strict(File::Spec->catfile($dir, 'main.slup'));
+    ok($status != 0, 'strict mode rejects undeclared global array read in foreach');
+    like($out, qr/undeclared global read: '\$UNDECLARED'/, 'foreach undeclared global array read is clear');
+}
+
+{
+    my $dir = tempdir(CLEANUP => 1);
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+set @vals = [1]
+foreach $UNDECLARED @vals
+  print($UNDECLARED)
+end
+SLUP
+    my ($status, $out) = run_strict(File::Spec->catfile($dir, 'main.slup'));
+    ok($status != 0, 'strict mode rejects undeclared global foreach iterator assignment');
+    like($out, qr/undeclared global assignment: '\$UNDECLARED'/, 'foreach undeclared global iterator assignment is clear');
+}
+
+{
+    my $dir = tempdir(CLEANUP => 1);
+    write_text(File::Spec->catfile($dir, 'mod.slup'), <<'SLUP');
+print("mod")
+SLUP
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+load("mod")
+foreach $x @mod/UNDECLARED
+  print($x)
+end
+SLUP
+    my ($status, $out) = run_strict(File::Spec->catfile($dir, 'main.slup'));
+    ok($status != 0, 'strict mode rejects module-qualified undeclared global array read in foreach');
+    like($out, qr/undeclared global read: '\$UNDECLARED'/, 'module-qualified foreach undeclared global array read is clear');
+}
+
+{
+    my $dir = tempdir(CLEANUP => 1);
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
 global $DB_HOST required
 set $path = "mod"
 load($path)
-SIMP
-    my ($status, $out) = run_strict(File::Spec->catfile($dir, 'main.simp'));
+SLUP
+    my ($status, $out) = run_strict(File::Spec->catfile($dir, 'main.slup'));
     ok($status != 0, 'strict mode uses startup static precheck');
     like($out, qr/static check requires load\("literal"\)/, 'strict mode reports non-static load in precheck');
 }

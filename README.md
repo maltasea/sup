@@ -1,10 +1,10 @@
-# simp
+# slup
 
-`simp` is a small scripting language interpreter.
+`slup` is a small scripting language interpreter.
 
 Main entrypoints:
-- Perl: `perl simp.pl <script.simp>`
-- OCaml build: `dune build ./simp.exe` then `_build/default/simp.exe <script.simp>`
+- Perl: `perl slup.pl <script.slup>`
+- OCaml build: `dune build ./slup.exe` then `_build/default/slup.exe <script.slup>`
 
 Execution model:
 - line-based parse (one line = one statement, except block constructs)
@@ -23,7 +23,7 @@ Supported symbol characters include:
 
 Examples:
 
-```simp
+```slup
 set $host = "localhost"   # local
 $DB_HOST = "localhost"    # global
 set @items = ["a", "b"]   # local array
@@ -34,7 +34,7 @@ set @ARGS = ["x", "y"]    # global array
 
 You can declare globals explicitly:
 
-```simp
+```slup
 global $DB_HOST required
 global $DB_PORT default("5432")
 ```
@@ -48,7 +48,7 @@ Declaration modifiers:
 Use static mode to verify global declarations/assignments without executing the script:
 
 ```sh
-perl simp.pl --check main.simp
+perl slup.pl --check main.slup
 ```
 
 `--check` enforces:
@@ -66,7 +66,7 @@ Limitation:
 Use strict mode to enforce global declarations at runtime:
 
 ```sh
-perl simp.pl --strict-globals main.simp
+perl slup.pl --strict-globals main.slup
 ```
 
 `--strict-globals` does:
@@ -84,7 +84,7 @@ Built-in globals predeclared by the interpreter:
 
 Load modules:
 
-```simp
+```slup
 load("moda")
 ```
 
@@ -100,7 +100,7 @@ Main module symbols stay callable without module prefix.
 
 Use `run` for one command (argv form, no shell parsing):
 
-```simp
+```slup
 set %r = run(["/bin/sh", "-c", "printf ok; printf warn 1>&2"])
 print(dict-get(%r, "code"))
 print(dict-get(%r, "out"))
@@ -109,7 +109,7 @@ print(dict-get(%r, "err"))
 
 Use `pipe` for command pipelines:
 
-```simp
+```slup
 set %r = pipe([["/bin/sh", "-c", "printf hi"], ["tr", "a-z", "A-Z"]])
 print(dict-get(%r, "code"))
 print(dict-get(%r, "out"))
@@ -129,12 +129,19 @@ Run all tests:
 ./tests/run-tests.sh
 ```
 
+`tests/run-tests.sh` runs the Perl suites by default.
+To include OCaml parity tests:
+
+```sh
+RUN_OCAML_TESTS=1 ./tests/run-tests.sh
+```
+
 Key test suites:
-- `tests/simp.t`
+- `tests/slup.t`
 - `tests/conformance.t`
 - `tests/static-check.t`
 - `tests/strict-globals.t`
-- `tests/simp-ocaml.t`
+- `tests/slup-ocaml.t`
 
 ## Benchmark
 
@@ -142,7 +149,7 @@ Quick call-overhead benchmark:
 
 ```sh
 perl bench/call-overhead.pl --impl perl --calls 20000 --iters 5 --warmup 1
-opam exec -- dune build ./simp.exe
+opam exec -- dune build ./slup.exe
 opam exec -- perl bench/call-overhead.pl --impl ocaml --calls 20000 --iters 5 --warmup 1
 ```
 
