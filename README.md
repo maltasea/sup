@@ -63,13 +63,13 @@ Declaration modifiers:
 ## Recursion
 
 Function recursion must be explicit:
-- `sub name(...)` defines a non-recursive function
+- `defun name(...)` defines a non-recursive function
 - `rec name(...)` defines a recursive function
 
 Examples:
 
 ```slup
-sub add1($x)
+defun add1($x)
   return(add($x, 1))
 end
 
@@ -81,9 +81,9 @@ rec fact($n)
 end
 ```
 
-Planned naming direction:
-- `sub` remains supported, with `defun` as preferred spelling.
-- `fun` is the preferred anonymous function spelling.
+Current naming direction:
+- `defun` for named functions (`sub` removed in Perl runtime)
+- `fun` for anonymous functions (`fn` removed in Perl runtime)
 
 ## Static Checking
 
@@ -218,8 +218,8 @@ opam exec -- perl bench/call-overhead.pl --impl ocaml --calls 20000 --iters 5 --
 ```
 
 It compares:
-- baseline loop with no user-sub call
-- equivalent loop that calls a user-defined `sub` each iteration
+- baseline loop with no user-function call
+- equivalent loop that calls a user-defined function each iteration
 
 Convenience targets:
 
@@ -236,7 +236,7 @@ perl bench/overhead-suite.pl --calls 20000 --depth 400 --iters 5 --warmup 1
 
 It reports:
 - recursion call overhead vs a loop baseline
-- module-qualified calls (`mod/sub(...)`) vs local sub calls
+- module-qualified calls (`mod/f(...)`) vs local function calls
 - strict globals runtime cost (`--strict-globals`) vs normal mode
 
 Append a dated benchmark snapshot:

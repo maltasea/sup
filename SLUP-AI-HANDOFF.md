@@ -16,7 +16,7 @@ Both interpreters should accept the same language. When adding features, impleme
 
 - Accepted aliases in both runtimes:
   - `def` / `let` for assignment forms currently parsed alongside `set`
-  - Perl runtime parses `defun` (with `sub` compatibility)
+  - Perl runtime parses `defun` (legacy `sub` removed)
 - In progress:
   - full `def`/`let` immutability semantics
   - enforce immutability rules in runtime semantics (`def`/`let` immutable, `set` mutable)
@@ -36,7 +36,7 @@ Single-file interpreter (~3000 lines). Key sections in order:
 ### Variable scoping
 
 - **Globals**: uppercase names, stored in `globals`/`global_arrays`/`global_dicts` hashtables.
-- **Locals**: lowercase names, stored in per-module frame stacks (`module_var_frames`). `push_module_var_frame` / `pop_module_var_frame` manage scope for sub calls and lambdas.
+- **Locals**: lowercase names, stored in per-module frame stacks (`module_var_frames`). `push_module_var_frame` / `pop_module_var_frame` manage scope for function calls and lambdas.
 
 ### Adding a new builtin
 

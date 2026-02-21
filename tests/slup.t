@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
-use Test::More tests => 60;
+use Test::More tests => 62;
 use File::Temp qw(tempfile tempdir);
 use FindBin qw($Bin);
 use File::Spec;
@@ -64,6 +64,16 @@ SLUP
 
 {
     my ($status, $out) = run_slup(<<'SLUP');
+sub nope($x)
+  return($x)
+end
+SLUP
+    ok($status != 0, 'sub keyword is rejected');
+    like($out, qr/Syntax error/, 'sub rejection is explicit');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
 set @xs = [1, 2]
 set @ys = map(@xs, fn($x -> add($x, 1)))
 print(len(@ys))
@@ -90,19 +100,19 @@ SLUP
 
 {
     my ($status, $out) = run_slup(<<'SLUP');
-sub double($n)
+defun double($n)
   return(mul($n, 2))
   print("dead code")
 end
 print(double(4))
 SLUP
-    is($status, 0, 'return(...) in sub exits successfully');
-    is($out, "8\n", 'return(...) exits sub body early');
+    is($status, 0, 'return(...) in defun exits successfully');
+    is($out, "8\n", 'return(...) exits defun body early');
 }
 
 {
     my ($status, $out) = run_slup(<<'SLUP');
-sub find-blue()
+defun find-blue()
   set @colors = ["red", "blue", "green"]
   foreach $c @colors
     if eq($c, "blue")
@@ -167,7 +177,7 @@ SLUP
 
 {
     my ($status, $out) = run_slup(<<'SLUP');
-sub count-down($n)
+defun count-down($n)
   if lt($n, 1)
     return(0)
   end
@@ -175,8 +185,8 @@ sub count-down($n)
 end
 print(count-down(3))
 SLUP
-    ok($status != 0, 'sub recursion is rejected by default');
-    like($out, qr/recursion is not allowed for sub 'count-down'/, 'sub recursion error explains rec requirement');
+    ok($status != 0, 'function recursion is rejected by default');
+    like($out, qr/recursion is not allowed for function 'count-down'/, 'non-rec function recursion error explains rec requirement');
 }
 
 {
@@ -195,13 +205,13 @@ SLUP
 
 {
     my ($status, $out) = run_slup(<<'SLUP');
-sub a($n)
+defun a($n)
   if lt($n, 1)
     return(0)
   end
   return(b(sub($n, 1)))
 end
-sub b($n)
+defun b($n)
   if lt($n, 1)
     return(0)
   end
@@ -210,7 +220,7 @@ end
 print(a(2))
 SLUP
     ok($status != 0, 'mutual recursion is rejected for non-rec functions');
-    like($out, qr/recursion is not allowed for sub 'a'/, 'mutual recursion error points at recursive target');
+    like($out, qr/recursion is not allowed for function 'a'/, 'mutual recursion error points at recursive target');
 }
 
 {
@@ -237,8 +247,8 @@ SLUP
     my ($status, $out) = run_slup(<<'SLUP');
 return("x")
 SLUP
-    ok($status != 0, 'return(...) outside sub fails');
-    like($out, qr/return outside sub/, 'outside-sub return has clear error');
+    ok($status != 0, 'return(...) outside function fails');
+    like($out, qr/return outside function/, 'outside-function return has clear error');
 }
 
 {
@@ -303,7 +313,7 @@ SLUP
 {
     my ($status, $out) = run_slup(<<'SLUP');
 $MYGLOBAL = "E3E"
-sub show()
+defun show()
   print($MYGLOBAL)
   $MYGLOBAL = "UPDATED"
 end
@@ -322,7 +332,7 @@ SLUP
     open my $mfh, '>', $mod or die "cannot write $mod: $!";
     print {$mfh} <<'SLUP';
 set $m = "mod"
-sub who($x)
+defun who($x)
   return(concat(concat($m, ":"), $x))
 end
 $SHARED = "module"
@@ -332,7 +342,7 @@ SLUP
     open my $fh, '>', $main or die "cannot write $main: $!";
     print {$fh} <<'SLUP';
 set $m = "main"
-sub who($x)
+defun who($x)
   return(concat(concat($m, ":"), $x))
 end
 $SHARED = "main"
@@ -356,7 +366,7 @@ SLUP
 
     open my $mfh, '>', $mod or die "cannot write $mod: $!";
     print {$mfh} <<'SLUP';
-sub only_mod()
+defun only_mod()
   return("x")
 end
 SLUP
@@ -403,11 +413,11 @@ SLUP
 
 {
     my ($status, $out) = run_slup(<<'SLUP');
-sub bad($x)
+defun bad($x)
   print($x)
 SLUP
-    ok($status != 0, 'missing end in sub fails');
-    like($out, qr/sub without matching end/, 'missing sub end has clear error');
+    ok($status != 0, 'missing end in defun fails');
+    like($out, qr/defun without matching end/, 'missing defun end has clear error');
 }
 
 {

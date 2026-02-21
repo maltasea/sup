@@ -41,13 +41,13 @@ sub slurp_raw {
     my $dir = tempdir(CLEANUP => 1);
     write_text(File::Spec->catfile($dir, 'alpha.slup'), <<'SLUP');
 set $name = "alpha"
-sub who($x)
+defun who($x)
   return(concat(concat($name, ":"), $x))
 end
 SLUP
     write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
 set $name = "main"
-sub who($x)
+defun who($x)
   return(concat(concat($name, ":"), $x))
 end
 load("alpha")
@@ -62,7 +62,7 @@ SLUP
 {
     my $dir = tempdir(CLEANUP => 1);
     write_text(File::Spec->catfile($dir, 'alpha.slup'), <<'SLUP');
-sub only_alpha()
+defun only_alpha()
   return("x")
 end
 SLUP
@@ -79,7 +79,7 @@ SLUP
     my $dir = tempdir(CLEANUP => 1);
     write_text(File::Spec->catfile($dir, 'alpha.slup'), <<'SLUP');
 $G = "from-module"
-sub getg()
+defun getg()
   return($G)
 end
 SLUP
@@ -117,7 +117,7 @@ SLUP
 {
     my $dir = tempdir(CLEANUP => 1);
     write_text(File::Spec->catfile($dir, 'mods', 'helper.slup'), <<'SLUP');
-sub ping()
+defun ping()
   return("pong")
 end
 SLUP
@@ -136,12 +136,12 @@ SLUP
 {
     my $dir = tempdir(CLEANUP => 1);
     write_text(File::Spec->catfile($dir, 'alpha.slup'), <<'SLUP');
-sub call_main()
+defun call_main()
   return(who("z"))
 end
 SLUP
     write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
-sub who($x)
+defun who($x)
   return(concat("main:", $x))
 end
 load("alpha")

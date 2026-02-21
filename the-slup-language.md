@@ -61,8 +61,7 @@ Supported expression forms:
 
 ## Functions
 
-- Non-recursive function: `sub name($a, $b) ... end`
-- Non-recursive function alias: `defun name($a, $b) ... end`
+- Non-recursive function: `defun name($a, $b) ... end`
 - Recursive function: `rec name($n) ... end`
 - Parameters are locals and must be lowercase.
 - `return(...)` is only valid inside a function.
@@ -139,7 +138,7 @@ end
 
 - `else without matching if`
 - `case without matching switch`
-- `<block> without matching end` (`if`, `when`, `unless`, `switch`, `while`, `sub`, `foreach`, `fori`)
+- `<block> without matching end` (`if`, `when`, `unless`, `switch`, `while`, `defun`, `rec`, `foreach`, `fori`)
 - `end without matching block`
 
 ## Runtime Notes

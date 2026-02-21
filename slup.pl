@@ -1846,7 +1846,7 @@ sub eval_expr {
             my $sub = module_subs_ref($target_module)->{$sub_name};
             my $call_id = "$target_module/$sub_name";
             if ($active_calls{$call_id}) {
-                die with_line_context("recursion is not allowed for sub '$sub_name'; declare it with rec")
+                die with_line_context("recursion is not allowed for function '$sub_name'; declare it with rec")
                     unless $sub->{recursive};
             }
             my $frames = module_var_frames_ref($target_module);
@@ -2109,7 +2109,7 @@ sub compile_block {
             next;
         }
 
-        if ($line =~ /^(rec|sub|defun)\s+($SYMBOL_NAME_RE)\s*\(([^)]*)\)$/) {
+        if ($line =~ /^(rec|defun)\s+($SYMBOL_NAME_RE)\s*\(([^)]*)\)$/) {
             my $start_line = $i + 1;
             my $kind = $1;
             my $name = $2;
@@ -2262,7 +2262,7 @@ sub exec_node {
     }
 
     if ($kind eq 'return') {
-        die "return outside sub on line $line_no\n" if $call_depth <= 0;
+        die "return outside function on line $line_no\n" if $call_depth <= 0;
         my $raw = $node->{raw} // '';
         if ($raw =~ /\S/) {
             local_var_set($current_module, '_return', eval_expr($raw));
