@@ -1,4 +1,4 @@
-.PHONY: check test bench bench-compare bench-guard bench-call-perl bench-call-ocaml
+.PHONY: check test bench bench-compare bench-guard bench-call-perl bench-call-ocaml release-ocaml
 
 BENCH_CALLS ?= 10000
 BENCH_DEPTH ?= 300
@@ -55,5 +55,10 @@ bench-call-perl:
 	perl bench/call-overhead.pl --impl perl
 
 bench-call-ocaml:
-	opam exec -- dune build ./simp.exe
+	opam exec -- dune build ./slup.exe
 	opam exec -- perl bench/call-overhead.pl --impl ocaml
+
+release-ocaml:
+	opam exec -- dune build --profile release ./slup.exe
+	cp _build/default/slup.exe ./slup
+	chmod +x ./slup
