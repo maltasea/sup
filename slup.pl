@@ -125,7 +125,7 @@ my %builtins = (
     'map'    => sub {
         my ($arr, $fn) = @_;
         die "map: first argument must be an array\n" unless ref $arr eq 'ARRAY';
-        die "map: second argument must be fn(...)\n" unless is_slup_lambda($fn);
+        die "map: second argument must be fun(...)\n" unless is_slup_lambda($fn);
         my @out;
         for my $v (@$arr) {
             push @out, invoke_lambda($fn, $v);
@@ -135,7 +135,7 @@ my %builtins = (
     'filter' => sub {
         my ($arr, $fn) = @_;
         die "filter: first argument must be an array\n" unless ref $arr eq 'ARRAY';
-        die "filter: second argument must be fn(...)\n" unless is_slup_lambda($fn);
+        die "filter: second argument must be fun(...)\n" unless is_slup_lambda($fn);
         my @out;
         for my $v (@$arr) {
             push @out, $v if is_truthy_value(invoke_lambda($fn, $v));
@@ -1621,7 +1621,7 @@ sub find_top_level_arrow {
 
 sub parse_lambda_expr {
     my ($raw, $label) = @_;
-    $label //= 'fn';
+    $label //= 'fun';
     $raw //= '';
     $raw =~ s/^\s+//;
     $raw =~ s/\s+$//;
@@ -1677,7 +1677,7 @@ sub is_slup_lambda {
 
 sub invoke_lambda {
     my ($fn, @args) = @_;
-    die "lambda: expected fn(...)\n" unless is_slup_lambda($fn);
+    die "lambda: expected fun(...)\n" unless is_slup_lambda($fn);
 
     my $target_module = $fn->{module} // $current_module;
     my $frames = module_var_frames_ref($target_module);
@@ -1822,8 +1822,8 @@ sub eval_expr {
     if ($expr =~ /^($SYMBOL_NAME_RE(?:\/$SYMBOL_NAME_RE)?)\s*\((.*)?\)\s*$/) {
         my $fname = $1;
         my $raw_args = $2 // '';
-        if ($fname eq 'fn') {
-            return parse_lambda_expr($raw_args, 'fn');
+        if ($fname eq 'fun' || $fname eq 'fn') {
+            return parse_lambda_expr($raw_args, 'fun');
         }
         my @args = parse_arglist($raw_args);
         my @evaled = map { eval_expr($_) } @args;
@@ -2109,7 +2109,7 @@ sub compile_block {
             next;
         }
 
-        if ($line =~ /^(rec|sub|defn)\s+($SYMBOL_NAME_RE)\s*\(([^)]*)\)$/) {
+        if ($line =~ /^(rec|sub|defun|defn)\s+($SYMBOL_NAME_RE)\s*\(([^)]*)\)$/) {
             my $start_line = $i + 1;
             my $kind = $1;
             my $name = $2;

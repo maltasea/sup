@@ -16,7 +16,7 @@ Both interpreters should accept the same language. When adding features, impleme
 
 - Accepted aliases in both runtimes:
   - `def` / `let` for assignment forms currently parsed alongside `set`
-  - `defn` parsed alongside `sub`
+  - Perl runtime parses `defun` (and compatibility aliases `defn`/`sub`)
 - In progress:
   - full `def`/`let` immutability semantics
   - enforce immutability rules in runtime semantics (`def`/`let` immutable, `set` mutable)

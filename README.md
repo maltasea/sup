@@ -19,12 +19,12 @@ Target syntax direction:
 - `def` for immutable top-level/module bindings
 - `let` for immutable local short-lived bindings
 - `set` as the only mutating form (updates existing bindings)
-- `defn` for named function definitions
-- `fn` for anonymous functions
+- `defun` for named function definitions
+- `fun` for anonymous functions
 
 Status note:
-- `def`, `let`, and `defn` are now accepted syntax aliases in both runtimes.
-- `fn(...)` is implemented in both runtimes.
+- Perl runtime accepts `def`, `let`, and `defun` (with `sub`/`defn` compatibility).
+- Perl runtime accepts `fun(...)` (with `fn(...)` compatibility).
 - Full immutability semantics migration is still in progress.
 
 ## Globals vs Locals
@@ -82,8 +82,8 @@ end
 ```
 
 Planned naming direction:
-- `sub` remains supported, with `defn` now accepted as alias.
-- anonymous function syntax is moving toward `fn`.
+- `sub` remains supported, with `defun` as preferred spelling.
+- `fun` is the preferred anonymous function spelling.
 
 ## Static Checking
 
