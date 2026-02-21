@@ -3,6 +3,10 @@ use strict;
 use warnings;
 use File::Spec;
 use File::Temp qw(tempfile);
+use Fcntl qw(:mode);
+use POSIX qw(WNOHANG strftime);
+use Scalar::Util qw(blessed);
+use Time::HiRes qw(time usleep);
 
 # ============================================================
 #  slup — a simple scripting language interpreter in Perl
@@ -32,6 +36,8 @@ our $call_depth = 0;
 our $returning = 0;
 our $active_line_no;
 our @call_stack;
+our %active_calls;
+my %sys_capabilities;
 
 # --- Built-in function registry ---
 my %builtins = (
@@ -270,14 +276,16 @@ my %builtins = (
         return $out;
     },
     'run' => sub {
-        my ($argv) = @_;
+        my ($argv, $timeout) = @_;
         die "run: first argument must be an array\n" unless ref($argv) eq 'ARRAY';
-        return run_command_capture($argv);
+        my $timeout_s = parse_timeout_seconds($timeout, 'run');
+        return run_command_capture($argv, $timeout_s);
     },
     'pipe' => sub {
-        my ($commands) = @_;
+        my ($commands, $timeout) = @_;
         die "pipe: first argument must be an array of command arrays\n" unless ref($commands) eq 'ARRAY';
-        return run_pipeline_capture($commands);
+        my $timeout_s = parse_timeout_seconds($timeout, 'pipe');
+        return run_pipeline_capture($commands, $timeout_s);
     },
     'mv' => sub {
         my ($old, $new) = @_;
@@ -288,11 +296,27 @@ my %builtins = (
     'cp' => sub {
         my ($old, $new) = @_;
         die "cp: missing arguments\n" unless defined $old && defined $new;
-        open my $in,  '<', $old or die "cp: cannot open '$old': $!\n";
-        open my $out, '>', $new or die "cp: cannot open '$new': $!\n";
-        print $out $_ while <$in>;
-        close $in; close $out;
+        require File::Copy;
+        File::Copy::copy($old, $new) or die "cp: cannot copy '$old' to '$new': $!\n";
+        my @src = stat($old);
+        if (@src) {
+            chmod($src[2] & 07777, $new) or die "cp: cannot set mode on '$new': $!\n";
+            utime($src[8], $src[9], $new) or die "cp: cannot preserve timestamps on '$new': $!\n";
+        }
         return $new;
+    },
+    'sys' => sub {
+        my ($capability, @args) = @_;
+        die "sys: missing capability\n" unless defined $capability && $capability ne '';
+        die "sys: capability must be a string\n" if ref($capability);
+        my $handler = $sys_capabilities{$capability};
+        return sys_err(38, "sys: unknown capability '$capability'")
+            unless defined $handler;
+        my $result = eval { $handler->(@args) };
+        return $result unless $@;
+        my $err = $@;
+        $err =~ s/\s+\z//;
+        return sys_err(255, "sys/$capability: $err");
     },
     'write-file' => sub {
         my ($text, $path) = @_;
@@ -318,9 +342,112 @@ my %builtins = (
         CORE::chdir($dir) or die "chdir: cannot change directory to '$dir': $!\n";
         return $dir;
     },
+    'true' => sub {
+        return 1;
+    },
+    'false' => sub {
+        return 0;
+    },
+    'sleep' => sub {
+        my ($seconds) = @_;
+        $seconds = 1 unless defined $seconds;
+        die "sleep: seconds must be numeric\n" unless !ref($seconds) && $seconds =~ /^-?\d+(?:\.\d+)?$/;
+        my $s = 0 + $seconds;
+        $s = 0 if $s < 0;
+        if (int($s) == $s) {
+            return CORE::sleep(int($s));
+        }
+        my $start = time();
+        while (time() - $start < $s) {
+            my $remaining = $s - (time() - $start);
+            last if $remaining <= 0;
+            usleep(int(($remaining < 0.05 ? $remaining : 0.05) * 1_000_000));
+        }
+        return 0;
+    },
+    'umask' => sub {
+        my ($mode_raw) = @_;
+        if (!defined $mode_raw || $mode_raw eq '') {
+            my $prev = CORE::umask();
+            CORE::umask($prev);
+            return $prev;
+        }
+        my $mode = parse_mode_value($mode_raw);
+        die "umask: mode must be numeric or octal string\n" unless defined $mode;
+        return CORE::umask($mode);
+    },
+    'times' => sub {
+        my @t = CORE::times();
+        return \@t;
+    },
+    'kill' => sub {
+        my ($signal, @pids) = @_;
+        $signal = 'TERM' unless defined $signal && $signal ne '';
+        die "kill: expected at least one pid\n" unless @pids;
+        return CORE::kill($signal, @pids);
+    },
+    'wait' => sub {
+        my ($pid) = @_;
+        $pid = -1 unless defined $pid;
+        die "wait: pid must be numeric\n" unless !ref($pid) && $pid =~ /^-?\d+$/;
+        my $res = waitpid(int($pid), 0);
+        my $status = $?;
+        return {
+            pid => $res,
+            status => $status,
+            code => status_to_code($status),
+            signal => ($status & 127),
+        };
+    },
+    'basename' => sub {
+        my ($path) = @_;
+        die "basename: missing path\n" unless defined $path && $path ne '';
+        require File::Basename;
+        return File::Basename::basename("$path");
+    },
+    'dirname' => sub {
+        my ($path) = @_;
+        die "dirname: missing path\n" unless defined $path && $path ne '';
+        require File::Basename;
+        return File::Basename::dirname("$path");
+    },
+    'path-type' => sub {
+        my ($path) = @_;
+        die "path-type: missing path\n" unless defined $path && $path ne '';
+        return path_type("$path");
+    },
+    'path-is-file' => sub {
+        my ($path) = @_;
+        die "path-is-file: missing path\n" unless defined $path && $path ne '';
+        return path_type("$path") eq 'file' ? 1 : 0;
+    },
+    'path-is-dir' => sub {
+        my ($path) = @_;
+        die "path-is-dir: missing path\n" unless defined $path && $path ne '';
+        return path_type("$path") eq 'dir' ? 1 : 0;
+    },
+    'path-is-socket' => sub {
+        my ($path) = @_;
+        die "path-is-socket: missing path\n" unless defined $path && $path ne '';
+        return path_type("$path") eq 'socket' ? 1 : 0;
+    },
+    'path-is-link' => sub {
+        my ($path) = @_;
+        die "path-is-link: missing path\n" unless defined $path && $path ne '';
+        return path_type("$path") eq 'link' ? 1 : 0;
+    },
     'path-join' => sub {
         die "path-join: expected at least one segment\n" unless @_;
         return File::Spec->catfile(map { defined $_ ? "$_" : '' } @_);
+    },
+    'date' => sub {
+        return strftime('%Y-%m-%d', localtime(CORE::time()));
+    },
+    'time' => sub {
+        return int(CORE::time());
+    },
+    'time-iso' => sub {
+        return strftime('%Y-%m-%dT%H:%M:%SZ', gmtime(CORE::time()));
     },
 );
 
@@ -342,10 +469,21 @@ $builtins{'dict->del'}   = $builtins{'dict-del'};
 
 $builtins{'dir->exists'} = $builtins{'dir-exists'};
 $builtins{'dir->entries'} = $builtins{'read-dir'};
+$builtins{'dir->list'} = $builtins{'read-dir'};
 $builtins{'file->exists'} = $builtins{'file-exists'};
 $builtins{'dir->cwd'} = $builtins{'cwd'};
 $builtins{'dir->chdir'} = $builtins{'chdir'};
+$builtins{'pwd'} = $builtins{'cwd'};
+$builtins{'cd'} = $builtins{'chdir'};
+$builtins{'read'} = $builtins{'user-input'};
 $builtins{'path->join'} = $builtins{'path-join'};
+$builtins{'path->basename'} = $builtins{'basename'};
+$builtins{'path->dirname'} = $builtins{'dirname'};
+$builtins{'path->type'} = $builtins{'path-type'};
+$builtins{'path->is-file'} = $builtins{'path-is-file'};
+$builtins{'path->is-dir'} = $builtins{'path-is-dir'};
+$builtins{'path->is-socket'} = $builtins{'path-is-socket'};
+$builtins{'path->is-link'} = $builtins{'path-is-link'};
 
 $builtins{'file->text'}  = $builtins{'read-file'};
 $builtins{'text->file'}  = $builtins{'write-file'};
@@ -353,6 +491,10 @@ $builtins{'file->append'} = $builtins{'append-file'};
 $builtins{'file->lines'} = $builtins{'read-file-lines'};
 $builtins{'lines->file'} = $builtins{'write-lines-file'};
 $builtins{'file->remove'} = $builtins{'rm'};
+$builtins{'sys->call'} = $builtins{'sys'};
+$builtins{'date->today'} = $builtins{'date'};
+$builtins{'time->now'} = $builtins{'time'};
+$builtins{'time->iso-utc'} = $builtins{'time-iso'};
 
 # ============================================================
 #  Module helpers
@@ -772,8 +914,79 @@ sub status_to_code {
     return $status >> 8;
 }
 
+sub parse_timeout_seconds {
+    my ($timeout, $ctx) = @_;
+    return undef unless defined $timeout;
+    die "$ctx: timeout must be a positive number of seconds\n"
+        unless $timeout =~ /^-?\d+(?:\.\d+)?$/;
+    my $seconds = 0 + $timeout;
+    die "$ctx: timeout must be a positive number of seconds\n" unless $seconds > 0;
+    return $seconds;
+}
+
+sub format_timeout_seconds {
+    my ($seconds) = @_;
+    return sprintf('%.3f', $seconds) + 0;
+}
+
+sub kill_pids_gracefully {
+    my ($pids_ref) = @_;
+    return unless @$pids_ref;
+    kill 'TERM', @$pids_ref;
+    my $deadline = time() + 0.2;
+    while (time() < $deadline) {
+        my @alive = grep { kill 0, $_ } @$pids_ref;
+        return unless @alive;
+        usleep(10_000);
+    }
+    my @alive = grep { kill 0, $_ } @$pids_ref;
+    kill 'KILL', @alive if @alive;
+}
+
+sub wait_for_children {
+    my ($pids_ref, $timeout_s) = @_;
+    my %statuses;
+    if (!defined $timeout_s) {
+        for my $pid (@$pids_ref) {
+            waitpid($pid, 0);
+            $statuses{$pid} = $?;
+        }
+        return (\%statuses, 0);
+    }
+    my $deadline = defined $timeout_s ? time() + $timeout_s : undef;
+
+    while (1) {
+        my $pending = 0;
+        for my $pid (@$pids_ref) {
+            next if exists $statuses{$pid};
+            my $res = waitpid($pid, WNOHANG);
+            if ($res > 0) {
+                $statuses{$res} = $?;
+                next;
+            }
+            if ($res == -1) {
+                $statuses{$pid} = -1;
+                next;
+            }
+            $pending++;
+        }
+        return (\%statuses, 0) if $pending == 0;
+
+        if (defined $deadline && time() >= $deadline) {
+            my @alive = grep { !exists $statuses{$_} } @$pids_ref;
+            kill_pids_gracefully(\@alive) if @alive;
+            for my $pid (@alive) {
+                waitpid($pid, 0);
+                $statuses{$pid} = $?;
+            }
+            return (\%statuses, 1);
+        }
+        usleep(10_000);
+    }
+}
+
 sub run_command_capture {
-    my ($argv) = @_;
+    my ($argv, $timeout_s) = @_;
     my $cmd = normalize_command_argv($argv, 'run');
     my ($outfh, $outpath) = tempfile();
     my ($errfh, $errpath) = tempfile();
@@ -791,10 +1004,15 @@ sub run_command_capture {
 
     close $outfh;
     close $errfh;
-    waitpid($pid, 0);
-    my $code = status_to_code($?);
+    my ($statuses, $timed_out) = wait_for_children([$pid], $timeout_s);
+    my $status = $statuses->{$pid};
+    my $code = $timed_out ? 124 : status_to_code($status);
     my $out = slurp_file($outpath);
     my $err = slurp_file($errpath);
+    if ($timed_out) {
+        my $label = format_timeout_seconds($timeout_s);
+        $err .= "run: timed out after ${label}s\n";
+    }
 
     unlink $outpath;
     unlink $errpath;
@@ -807,7 +1025,7 @@ sub run_command_capture {
 }
 
 sub run_pipeline_capture {
-    my ($commands) = @_;
+    my ($commands, $timeout_s) = @_;
     die "pipe: command list must not be empty\n" unless @$commands;
     my @cmds = map {
         normalize_command_argv($_, 'pipe');
@@ -864,16 +1082,16 @@ sub run_pipeline_capture {
     }
     close $prev_read if defined $prev_read;
 
-    my %statuses;
-    for my $pid (@pids) {
-        waitpid($pid, 0);
-        $statuses{$pid} = $?;
-    }
+    my ($statuses_ref, $timed_out) = wait_for_children(\@pids, $timeout_s);
 
-    my $last_status = $statuses{$pids[-1]};
-    my $code = status_to_code($last_status);
+    my $last_status = $statuses_ref->{$pids[-1]};
+    my $code = $timed_out ? 124 : status_to_code($last_status);
     my $out = slurp_file($outpath);
     my $err = slurp_file($errpath);
+    if ($timed_out) {
+        my $label = format_timeout_seconds($timeout_s);
+        $err .= "pipe: timed out after ${label}s\n";
+    }
 
     unlink $outpath;
     unlink $errpath;
@@ -884,6 +1102,346 @@ sub run_pipeline_capture {
         err  => $err,
     };
 }
+
+sub path_type {
+    my ($path) = @_;
+    return 'missing' if !defined $path || $path eq '';
+    my @st = lstat($path);
+    return 'missing' unless @st;
+    return sys_type_from_mode($st[2]);
+}
+
+sub sys_ok {
+    my (%data) = @_;
+    return {
+        ok   => 1,
+        code => 0,
+        err  => '',
+        %data,
+    };
+}
+
+sub sys_err {
+    my ($code, $err, %data) = @_;
+    my $n = defined $code ? int($code) : 1;
+    $n = 1 if $n < 0;
+    return {
+        ok   => 0,
+        code => $n,
+        err  => (defined $err ? "$err" : 'error'),
+        %data,
+    };
+}
+
+sub sys_type_from_mode {
+    my ($mode) = @_;
+    my $kind = $mode & S_IFMT;
+    return 'file'   if $kind == S_IFREG;
+    return 'dir'    if $kind == S_IFDIR;
+    return 'link'   if $kind == S_IFLNK;
+    return 'char'   if $kind == S_IFCHR;
+    return 'block'  if $kind == S_IFBLK;
+    return 'fifo'   if $kind == S_IFIFO;
+    return 'socket' if $kind == S_IFSOCK;
+    return 'other';
+}
+
+sub sys_stat_payload {
+    my ($st_ref) = @_;
+    my @st = @$st_ref;
+    my $mode = $st[2] & 07777;
+    return (
+        type => sys_type_from_mode($st[2]),
+        dev => $st[0],
+        ino => $st[1],
+        mode => $mode,
+        'mode-oct' => sprintf('%04o', $mode),
+        nlink => $st[3],
+        uid => $st[4],
+        gid => $st[5],
+        rdev => $st[6],
+        size => $st[7],
+        atime => $st[8],
+        mtime => $st[9],
+        ctime => $st[10],
+        blksize => $st[11],
+        blocks => $st[12],
+    );
+}
+
+sub sys_path_arg {
+    my ($ctx, $path) = @_;
+    return undef if !defined $path || ref($path) || $path eq '';
+    return "$path";
+}
+
+sub parse_mode_value {
+    my ($raw) = @_;
+    return undef unless defined $raw && !ref($raw);
+    return oct($raw) if $raw =~ /^0?[0-7]{3,4}$/;
+    return 0 + $raw if $raw =~ /^\d+$/;
+    return undef;
+}
+
+sub dict_get_bool {
+    my ($href, $key) = @_;
+    return 0 unless ref($href) eq 'HASH' && exists $href->{$key};
+    my $v = $href->{$key};
+    return ($v && $v ne '0' && $v ne '') ? 1 : 0;
+}
+
+sub has_blessed_ref {
+    my ($value) = @_;
+    return 0 unless ref($value);
+    return 1 if blessed($value);
+    if (ref($value) eq 'ARRAY') {
+        for my $item (@$value) {
+            return 1 if has_blessed_ref($item);
+        }
+        return 0;
+    }
+    if (ref($value) eq 'HASH') {
+        for my $item (values %$value) {
+            return 1 if has_blessed_ref($item);
+        }
+        return 0;
+    }
+    return 0;
+}
+
+sub is_perl_module_name {
+    my ($name) = @_;
+    return 0 unless defined $name && !ref($name);
+    return $name =~ /\A[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*\z/ ? 1 : 0;
+}
+
+sub is_perl_callable_name {
+    my ($name) = @_;
+    return 0 unless defined $name && !ref($name);
+    return $name =~ /\A[A-Za-z_][A-Za-z0-9_]*\z/ ? 1 : 0;
+}
+
+sub require_perl_module {
+    my ($module) = @_;
+    return sys_err(22, 'perl.module.require: invalid module name')
+        unless is_perl_module_name($module);
+    my $ok = eval "require $module; 1;";
+    if (!$ok) {
+        my $err = $@;
+        $err =~ s/\s+\z//;
+        return sys_err(2, "perl.module.require: $err", module => $module);
+    }
+    return sys_ok(module => $module, loaded => 1);
+}
+
+sub init_sys_capabilities {
+    %sys_capabilities = (
+        'sys.capabilities' => sub {
+            return sys_ok(items => [sort keys %sys_capabilities]);
+        },
+        'perl.module.require' => sub {
+            my ($module) = @_;
+            return require_perl_module($module);
+        },
+        'perl.module.can' => sub {
+            my ($module, $function) = @_;
+            return sys_err(22, 'perl.module.can: invalid module name')
+                unless is_perl_module_name($module);
+            return sys_err(22, 'perl.module.can: invalid function name')
+                unless is_perl_callable_name($function);
+            my $loaded = require_perl_module($module);
+            return $loaded unless dict_get_bool($loaded, 'ok');
+            no strict 'refs';
+            my $can = $module->can($function) ? 1 : 0;
+            return sys_ok(module => $module, function => $function, can => $can);
+        },
+        'perl.call' => sub {
+            my ($module, $function, $args) = @_;
+            return sys_err(22, 'perl.call: invalid module name')
+                unless is_perl_module_name($module);
+            return sys_err(22, 'perl.call: invalid function name')
+                unless is_perl_callable_name($function);
+            $args = [] unless defined $args;
+            return sys_err(22, 'perl.call: args must be an array') unless ref($args) eq 'ARRAY';
+            return sys_err(95, 'perl.call: blessed references are not allowed in args')
+                if has_blessed_ref($args);
+            my $loaded = require_perl_module($module);
+            return $loaded unless dict_get_bool($loaded, 'ok');
+            no strict 'refs';
+            my $code = $module->can($function);
+            return sys_err(38, "perl.call: function '$function' not found in module '$module'")
+                unless $code;
+            my $result = eval { $code->(@$args) };
+            if ($@) {
+                my $err = $@;
+                $err =~ s/\s+\z//;
+                return sys_err(255, "perl.call: $err", module => $module, function => $function);
+            }
+            return sys_err(95, 'perl.call: blessed references are not allowed as results', module => $module, function => $function)
+                if has_blessed_ref($result);
+            if (ref($result) && ref($result) ne 'HASH' && ref($result) ne 'ARRAY') {
+                return sys_err(95, "perl.call: unsupported return type " . ref($result), module => $module, function => $function);
+            }
+            return sys_ok(module => $module, function => $function, result => $result);
+        },
+        'posix.getpid' => sub {
+            return sys_err(22, 'posix.getpid: expected no arguments') if @_;
+            return sys_ok(pid => $$);
+        },
+        'posix.getppid' => sub {
+            return sys_err(22, 'posix.getppid: expected no arguments') if @_;
+            return sys_ok(pid => getppid());
+        },
+        'posix.stat' => sub {
+            my ($path) = @_;
+            my $p = sys_path_arg('posix.stat', $path);
+            return sys_err(22, 'posix.stat: missing path') unless defined $p;
+            my @st = stat($p);
+            if (!@st) {
+                my $errno = 0 + $!;
+                my $msg = "$!";
+                return sys_err($errno, "posix.stat: $msg", path => $p, exists => 0, type => 'missing');
+            }
+            return sys_ok(path => $p, exists => 1, sys_stat_payload(\@st));
+        },
+        'posix.lstat' => sub {
+            my ($path) = @_;
+            my $p = sys_path_arg('posix.lstat', $path);
+            return sys_err(22, 'posix.lstat: missing path') unless defined $p;
+            my @st = lstat($p);
+            if (!@st) {
+                my $errno = 0 + $!;
+                my $msg = "$!";
+                return sys_err($errno, "posix.lstat: $msg", path => $p, exists => 0, type => 'missing');
+            }
+            return sys_ok(path => $p, exists => 1, sys_stat_payload(\@st));
+        },
+        'posix.access' => sub {
+            my ($path, $mode) = @_;
+            my $p = sys_path_arg('posix.access', $path);
+            return sys_err(22, 'posix.access: missing path') unless defined $p;
+            $mode = 'e' if !defined $mode || $mode eq '';
+            return sys_err(22, 'posix.access: mode must only contain e/r/w/x')
+                if ref($mode) || $mode !~ /\A[erwx]+\z/;
+            my $allowed = 1;
+            for my $flag (split //, $mode) {
+                if ($flag eq 'e') {
+                    $allowed &&= (-e $p ? 1 : 0);
+                } elsif ($flag eq 'r') {
+                    $allowed &&= (-r $p ? 1 : 0);
+                } elsif ($flag eq 'w') {
+                    $allowed &&= (-w $p ? 1 : 0);
+                } elsif ($flag eq 'x') {
+                    $allowed &&= (-x $p ? 1 : 0);
+                }
+            }
+            return sys_ok(path => $p, mode => "$mode", allowed => ($allowed ? 1 : 0));
+        },
+        'posix.readlink' => sub {
+            my ($path) = @_;
+            my $p = sys_path_arg('posix.readlink', $path);
+            return sys_err(22, 'posix.readlink: missing path') unless defined $p;
+            my $target = readlink($p);
+            if (!defined $target) {
+                my $errno = 0 + $!;
+                my $msg = "$!";
+                return sys_err($errno, "posix.readlink: $msg", path => $p);
+            }
+            return sys_ok(path => $p, target => $target);
+        },
+        'posix.symlink' => sub {
+            my ($target, $path) = @_;
+            return sys_err(22, 'posix.symlink: missing target') unless defined $target && !ref($target) && $target ne '';
+            my $p = sys_path_arg('posix.symlink', $path);
+            return sys_err(22, 'posix.symlink: missing path') unless defined $p;
+            if (!symlink($target, $p)) {
+                my $errno = 0 + $!;
+                my $msg = "$!";
+                return sys_err($errno, "posix.symlink: $msg", path => $p);
+            }
+            return sys_ok(path => $p, target => "$target");
+        },
+        'posix.unlink' => sub {
+            my ($path) = @_;
+            my $p = sys_path_arg('posix.unlink', $path);
+            return sys_err(22, 'posix.unlink: missing path') unless defined $p;
+            if (unlink($p)) {
+                return sys_ok(path => $p, removed => 1);
+            }
+            my $errno = 0 + $!;
+            my $msg = "$!";
+            return sys_err($errno, "posix.unlink: $msg", path => $p, removed => 0);
+        },
+        'posix.mkdir' => sub {
+            my ($path, $mode_raw) = @_;
+            my $p = sys_path_arg('posix.mkdir', $path);
+            return sys_err(22, 'posix.mkdir: missing path') unless defined $p;
+            my $mode = defined $mode_raw ? parse_mode_value($mode_raw) : 0777;
+            return sys_err(22, 'posix.mkdir: mode must be numeric or octal string') unless defined $mode;
+            if (mkdir($p, $mode)) {
+                return sys_ok(path => $p, mode => $mode, 'mode-oct' => sprintf('%04o', $mode & 07777));
+            }
+            my $errno = 0 + $!;
+            my $msg = "$!";
+            return sys_err($errno, "posix.mkdir: $msg", path => $p);
+        },
+        'posix.rmdir' => sub {
+            my ($path) = @_;
+            my $p = sys_path_arg('posix.rmdir', $path);
+            return sys_err(22, 'posix.rmdir: missing path') unless defined $p;
+            if (rmdir($p)) {
+                return sys_ok(path => $p, removed => 1);
+            }
+            my $errno = 0 + $!;
+            my $msg = "$!";
+            return sys_err($errno, "posix.rmdir: $msg", path => $p, removed => 0);
+        },
+        'posix.chmod' => sub {
+            my ($path, $mode_raw) = @_;
+            my $p = sys_path_arg('posix.chmod', $path);
+            return sys_err(22, 'posix.chmod: missing path') unless defined $p;
+            my $mode = parse_mode_value($mode_raw);
+            return sys_err(22, 'posix.chmod: mode must be numeric or octal string') unless defined $mode;
+            my $changed = chmod($mode, $p);
+            if ($changed == 1) {
+                return sys_ok(path => $p, mode => $mode, 'mode-oct' => sprintf('%04o', $mode & 07777));
+            }
+            my $errno = 0 + $!;
+            my $msg = "$!";
+            return sys_err($errno, "posix.chmod: $msg", path => $p);
+        },
+        'posix.utime' => sub {
+            my ($path, $atime, $mtime) = @_;
+            my $p = sys_path_arg('posix.utime', $path);
+            return sys_err(22, 'posix.utime: missing path') unless defined $p;
+            return sys_err(22, 'posix.utime: atime must be numeric')
+                unless defined $atime && !ref($atime) && $atime =~ /^-?\d+(?:\.\d+)?$/;
+            return sys_err(22, 'posix.utime: mtime must be numeric')
+                unless defined $mtime && !ref($mtime) && $mtime =~ /^-?\d+(?:\.\d+)?$/;
+            if (utime(0 + $atime, 0 + $mtime, $p) == 1) {
+                return sys_ok(path => $p, atime => 0 + $atime, mtime => 0 + $mtime);
+            }
+            my $errno = 0 + $!;
+            my $msg = "$!";
+            return sys_err($errno, "posix.utime: $msg", path => $p);
+        },
+        'posix.realpath' => sub {
+            my ($path) = @_;
+            my $p = sys_path_arg('posix.realpath', $path);
+            return sys_err(22, 'posix.realpath: missing path') unless defined $p;
+            require Cwd;
+            my $resolved = Cwd::realpath($p);
+            if (defined $resolved) {
+                return sys_ok(path => $p, realpath => $resolved);
+            }
+            my $errno = 0 + $!;
+            my $msg = "$!";
+            return sys_err($errno, "posix.realpath: $msg", path => $p);
+        },
+    );
+}
+
+init_sys_capabilities();
 
 # ============================================================
 #  Parser helpers
@@ -1138,13 +1696,14 @@ sub eval_expr {
         if (defined $target_module) {
             my $sub = module_subs_ref($target_module)->{$sub_name};
             my $call_id = "$target_module/$sub_name";
-            if (grep { $_ eq $call_id } @call_stack) {
+            if ($active_calls{$call_id}) {
                 die with_line_context("recursion is not allowed for sub '$sub_name'; declare it with rec")
                     unless $sub->{recursive};
             }
             my $frames = module_var_frames_ref($target_module);
             push @$frames, {};
             push @call_stack, $call_id;
+            $active_calls{$call_id}++;
             my $frame = $frames->[-1];
             my $ret;
             my $ok = eval {
@@ -1162,6 +1721,8 @@ sub eval_expr {
             };
             my $err = $@;
             pop @call_stack;
+            $active_calls{$call_id}--;
+            delete $active_calls{$call_id} unless $active_calls{$call_id};
             pop @$frames;
             die $err unless $ok;
             return $ret;
@@ -1339,6 +1900,32 @@ sub compile_block {
             }
             push @nodes, {
                 kind => 'if',
+                line => $start_line,
+                cond => $cond,
+                true_body => $true_nodes,
+                false_body => $false_nodes,
+            };
+            next;
+        }
+
+        if ($line =~ /^when\s+(.+)$/) {
+            my $start_line = $i + 1;
+            my $cond = $1;
+            my ($true_nodes, $next_i, $term) = compile_block($lines_ref, $i + 1, 1);
+            die "when without matching end on line $start_line\n" unless defined $term;
+            my $false_nodes = [];
+            if ($term eq 'else') {
+                my ($f_nodes, $after_false, $term2) = compile_block($lines_ref, $next_i, 0);
+                die "when without matching end on line $start_line\n" unless defined $term2 && $term2 eq 'end';
+                $false_nodes = $f_nodes;
+                $i = $after_false;
+            } elsif ($term eq 'end') {
+                $i = $next_i;
+            } else {
+                die "when without matching end on line $start_line\n";
+            }
+            push @nodes, {
+                kind => 'when',
                 line => $start_line,
                 cond => $cond,
                 true_body => $true_nodes,
@@ -1538,6 +2125,17 @@ sub exec_node {
     }
 
     if ($kind eq 'if') {
+        my $cond = eval_expr($node->{cond});
+        my $truthy = $cond && $cond ne '0' && $cond ne '';
+        if ($truthy) {
+            run_lines($node->{true_body});
+        } else {
+            run_lines($node->{false_body});
+        }
+        return;
+    }
+
+    if ($kind eq 'when') {
         my $cond = eval_expr($node->{cond});
         my $truthy = $cond && $cond ne '0' && $cond ne '';
         if ($truthy) {

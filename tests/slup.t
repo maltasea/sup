@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
-use Test::More tests => 46;
+use Test::More tests => 52;
 use File::Temp qw(tempfile tempdir);
 use FindBin qw($Bin);
 use File::Spec;
@@ -65,6 +65,30 @@ print(find-blue())
 SLUP
     is($status, 0, 'return(...) propagates through nested blocks');
     is($out, "blue\n", 'nested return value is preserved');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+when eq("a", "a")
+  print("x")
+else
+  print("y")
+end
+SLUP
+    is($status, 0, 'when executes then-branch when condition is true');
+    is($out, "x\n", 'when true condition output');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+when eq("a", "b")
+  print("x")
+else
+  print("y")
+end
+SLUP
+    is($status, 0, 'when executes else-branch when condition is false');
+    is($out, "y\n", 'when false condition output');
 }
 
 {
@@ -307,6 +331,15 @@ if eq("a", "a")
 SLUP
     ok($status != 0, 'missing end in if fails');
     like($out, qr/if without matching end/, 'missing if end has clear error');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+when eq("a", "a")
+  print("x")
+SLUP
+    ok($status != 0, 'missing end in when fails');
+    like($out, qr/when without matching end/, 'missing when end has clear error');
 }
 
 {
