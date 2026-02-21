@@ -164,10 +164,10 @@ let parse_positive_int_env_alias preferred legacy default =
   | None -> parse_positive_int_env legacy default
 
 let max_call_depth =
-  parse_positive_int_env_alias "SUP_MAX_CALL_DEPTH" "SLUP_MAX_CALL_DEPTH" 1024
+  parse_positive_int_env_alias "SUP_MAX_CALL_DEPTH" "SUP_MAX_CALL_DEPTH" 1024
 
 let max_capture_bytes =
-  parse_positive_int_env_alias "SUP_MAX_CAPTURE_BYTES" "SLUP_MAX_CAPTURE_BYTES" (16 * 1024 * 1024)
+  parse_positive_int_env_alias "SUP_MAX_CAPTURE_BYTES" "SUP_MAX_CAPTURE_BYTES" (16 * 1024 * 1024)
 
 let dynarr_empty () = { data = [||]; len = 0 }
 
@@ -642,18 +642,18 @@ let resolve_load_path file =
     add (Filename.concat base_dir file);
     if not (has_extension file) then begin
       add (Filename.concat base_dir (file ^ ".sup"));
-      add (Filename.concat base_dir (file ^ ".slup")) (* backward compatibility *)
+      add (Filename.concat base_dir (file ^ ".sup")) (* backward compatibility *)
     end;
     add file;
     if not (has_extension file) then begin
       add (file ^ ".sup");
-      add (file ^ ".slup") (* backward compatibility *)
+      add (file ^ ".sup") (* backward compatibility *)
     end
   end else begin
     add file;
     if not (has_extension file) then begin
       add (file ^ ".sup");
-      add (file ^ ".slup") (* backward compatibility *)
+      add (file ^ ".sup") (* backward compatibility *)
     end
   end;
   let rec pick = function
@@ -799,18 +799,18 @@ let resolve_load_path_from_file from_file target =
     add (Filename.concat base_dir target);
     if not (has_extension target) then begin
       add (Filename.concat base_dir (target ^ ".sup"));
-      add (Filename.concat base_dir (target ^ ".slup")) (* backward compatibility *)
+      add (Filename.concat base_dir (target ^ ".sup")) (* backward compatibility *)
     end;
     add target;
     if not (has_extension target) then begin
       add (target ^ ".sup");
-      add (target ^ ".slup") (* backward compatibility *)
+      add (target ^ ".sup") (* backward compatibility *)
     end
   end else begin
     add target;
     if not (has_extension target) then begin
       add (target ^ ".sup");
-      add (target ^ ".slup") (* backward compatibility *)
+      add (target ^ ".sup") (* backward compatibility *)
     end
   end;
   let rec pick = function
@@ -1112,7 +1112,7 @@ let light_escape_string raw =
   Buffer.add_char buf '"';
   Buffer.contents buf
 
-let light_regex_literal_to_slup pat flags =
+let light_regex_literal_to_sup pat flags =
   let mods = Buffer.create 4 in
   if String.contains flags 'i' then Buffer.add_char mods 'i';
   if String.contains flags 'm' then Buffer.add_char mods 'm';
@@ -1441,53 +1441,53 @@ and light_parse_primary tokens pos =
   | _ ->
     failwith "unexpected token in expression"
 
-let rec light_ast_to_slup ?(as_callee = false) node =
+let rec light_ast_to_sup ?(as_callee = false) node =
   match node with
   | LANum s -> s
   | LAStr s -> light_escape_string s
   | LABool b -> if b then "1" else "0"
   | LANil -> "nil"
   | LAIdent s -> if as_callee then s else "$" ^ s
-  | LARegex (pat, flags) -> light_regex_literal_to_slup pat flags
+  | LARegex (pat, flags) -> light_regex_literal_to_sup pat flags
   | LASubst _ -> failwith "substitution token can only be used with '=~'"
   | LAArray items ->
-    "[" ^ String.concat ", " (List.map (light_ast_to_slup ~as_callee:false) items) ^ "]"
+    "[" ^ String.concat ", " (List.map (light_ast_to_sup ~as_callee:false) items) ^ "]"
   | LADict pairs ->
     let rendered =
       List.map (fun (k, v) ->
-        light_ast_to_slup ~as_callee:false k ^ ": " ^ light_ast_to_slup ~as_callee:false v
+        light_ast_to_sup ~as_callee:false k ^ ": " ^ light_ast_to_sup ~as_callee:false v
       ) pairs
     in
     "{" ^ String.concat ", " rendered ^ "}"
   | LACall (callee, args) ->
-    let fn = light_ast_to_slup ~as_callee:true callee in
+    let fn = light_ast_to_sup ~as_callee:true callee in
     if String.length fn > 0 && fn.[0] = '$' then
       failwith "call target must be an identifier";
-    fn ^ "(" ^ String.concat ", " (List.map (light_ast_to_slup ~as_callee:false) args) ^ ")"
+    fn ^ "(" ^ String.concat ", " (List.map (light_ast_to_sup ~as_callee:false) args) ^ ")"
   | LAIndex (base, idx) ->
-    "get(" ^ light_ast_to_slup ~as_callee:false base ^ ", "
-    ^ light_ast_to_slup ~as_callee:false idx ^ ")"
+    "get(" ^ light_ast_to_sup ~as_callee:false base ^ ", "
+    ^ light_ast_to_sup ~as_callee:false idx ^ ")"
   | LAUnary (op, rhs) ->
-    let rhs = light_ast_to_slup ~as_callee:false rhs in
+    let rhs = light_ast_to_sup ~as_callee:false rhs in
     if op = "+" then rhs
     else if op = "-" then "sub(0, " ^ rhs ^ ")"
     else if op = "not" then "not(" ^ rhs ^ ")"
     else failwith ("unsupported unary operator '" ^ op ^ "'")
   | LABin (op, left, right) ->
-    let lhs = light_ast_to_slup ~as_callee:false left in
+    let lhs = light_ast_to_sup ~as_callee:false left in
     if op = "=~" then
       (match right with
       | LASubst (pat, rep, flags) ->
         "rx-sub(" ^ lhs ^ ", " ^ light_escape_string pat ^ ", "
         ^ light_escape_string rep ^ ", " ^ light_escape_string flags ^ ")"
       | _ ->
-        let rhs = light_ast_to_slup ~as_callee:false right in
+        let rhs = light_ast_to_sup ~as_callee:false right in
         "matchrx(" ^ lhs ^ ", " ^ rhs ^ ")")
     else if op = "!~" then
-      let rhs = light_ast_to_slup ~as_callee:false right in
+      let rhs = light_ast_to_sup ~as_callee:false right in
       "not(matchrx(" ^ lhs ^ ", " ^ rhs ^ "))"
     else
-      let rhs = light_ast_to_slup ~as_callee:false right in
+      let rhs = light_ast_to_sup ~as_callee:false right in
       let fn =
         match op with
         | "+" -> "add"
@@ -1519,7 +1519,7 @@ let maybe_normalize_light_expr expr =
       let pos = ref 0 in
       let ast = light_parse_expr toks pos in
       (match light_peek toks pos with
-      | LTEof -> light_ast_to_slup ast
+      | LTEof -> light_ast_to_sup ast
       | _ -> expr)
     with Failure _ ->
       expr
@@ -2186,7 +2186,7 @@ let invoke_named_sub target_module sub_name evaled =
     failwith
       (with_line_context
          (Printf.sprintf
-            "maximum call depth exceeded (%d); set SUP_MAX_CALL_DEPTH to override (legacy: SLUP_MAX_CALL_DEPTH)"
+            "maximum call depth exceeded (%d); set SUP_MAX_CALL_DEPTH to override (legacy: SUP_MAX_CALL_DEPTH)"
             max_call_depth));
   let saved_returning = !returning in
   let saved_module = !current_module in
@@ -2630,7 +2630,7 @@ let invoke_lambda fn args =
     if saved_depth + 1 > max_call_depth then
       failwith
         (Printf.sprintf
-           "maximum call depth exceeded (%d); set SUP_MAX_CALL_DEPTH to override (legacy: SLUP_MAX_CALL_DEPTH)"
+           "maximum call depth exceeded (%d); set SUP_MAX_CALL_DEPTH to override (legacy: SUP_MAX_CALL_DEPTH)"
            max_call_depth);
     push_module_var_frame !current_module;
     call_depth := saved_depth + 1;
@@ -2687,7 +2687,7 @@ let slurp_file_capped ctx path =
   if st.Unix.st_size > max_capture_bytes then
     failwith
       (Printf.sprintf
-         "%s: captured output exceeds %d bytes (set SUP_MAX_CAPTURE_BYTES to override; legacy: SLUP_MAX_CAPTURE_BYTES)"
+         "%s: captured output exceeds %d bytes (set SUP_MAX_CAPTURE_BYTES to override; legacy: SUP_MAX_CAPTURE_BYTES)"
          ctx max_capture_bytes);
   slurp_file path
 

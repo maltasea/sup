@@ -28,8 +28,8 @@ die "--iters must be > 0\n" unless $iters > 0;
 die "--warmup must be >= 0\n" unless $warmup >= 0;
 
 my $root = File::Spec->rel2abs(File::Spec->catdir(File::Spec->curdir()));
-my $slup = File::Spec->catfile($root, 'sup.pl');
-die "Cannot find sup.pl at $slup\n" unless -f $slup;
+my $sup = File::Spec->catfile($root, 'sup.pl');
+die "Cannot find sup.pl at $sup\n" unless -f $sup;
 
 my $tmp = tempdir(CLEANUP => 1);
 
@@ -44,19 +44,19 @@ my $rec_fn = File::Spec->catfile($tmp, 'rec-fn.sup');
 
 write_program(
     $rec_iter,
-    <<"SLUP"
+    <<"SUP"
 set \@nums = [$ones_depth]
 set \$sum = 0
 foreach \$n \@nums
   set \$sum = add(\$sum, \$n)
 end
 print(\$sum)
-SLUP
+SUP
 );
 
 write_program(
     $rec_fn,
-    <<"SLUP"
+    <<"SUP"
 defun rec(\$n)
   if lt(\$n, 1)
     return(0)
@@ -64,11 +64,11 @@ defun rec(\$n)
   return(add(1, rec(sub(\$n, 1))))
 end
 print(rec($depth))
-SLUP
+SUP
 );
 
-my $rec_base = bench_case('rec-baseline(loop)', $slup, [], $rec_iter, $warmup, $iters);
-my $rec_with = bench_case('recursion(calls)', $slup, [], $rec_fn, $warmup, $iters);
+my $rec_base = bench_case('rec-baseline(loop)', $sup, [], $rec_iter, $warmup, $iters);
+my $rec_with = bench_case('recursion(calls)', $sup, [], $rec_fn, $warmup, $iters);
 
 # ----------------------------------------------------------------------
 # Local function call vs module-qualified call
@@ -79,16 +79,16 @@ my $mod_qual = File::Spec->catfile($tmp, 'mod-qualified.sup');
 
 write_program(
     $mod_file,
-    <<"SLUP"
+    <<"SUP"
 defun inc(\$x)
   return(add(\$x, 1))
 end
-SLUP
+SUP
 );
 
 write_program(
     $mod_local,
-    <<"SLUP"
+    <<"SUP"
 defun inc(\$x)
   return(add(\$x, 1))
 end
@@ -98,12 +98,12 @@ foreach \$n \@nums
   set \$sum = add(\$sum, inc(\$n))
 end
 print(\$sum)
-SLUP
+SUP
 );
 
 write_program(
     $mod_qual,
-    <<"SLUP"
+    <<"SUP"
 load("benchmod")
 set \@nums = [$ones_calls]
 set \$sum = 0
@@ -111,11 +111,11 @@ foreach \$n \@nums
   set \$sum = add(\$sum, benchmod/inc(\$n))
 end
 print(\$sum)
-SLUP
+SUP
 );
 
-my $mod_base = bench_case('local-function-calls', $slup, [], $mod_local, $warmup, $iters);
-my $mod_with = bench_case('module/function-calls', $slup, [], $mod_qual, $warmup, $iters);
+my $mod_base = bench_case('local-function-calls', $sup, [], $mod_local, $warmup, $iters);
+my $mod_with = bench_case('module/function-calls', $sup, [], $mod_qual, $warmup, $iters);
 
 # ----------------------------------------------------------------------
 # strict-globals overhead
@@ -124,18 +124,18 @@ my $strict_prog = File::Spec->catfile($tmp, 'strict-globals.sup');
 
 write_program(
     $strict_prog,
-    <<"SLUP"
+    <<"SUP"
 global \$SUM default("0")
 set \@nums = [$ones_calls]
 foreach \$n \@nums
   set \$SUM = add(\$SUM, \$n)
 end
 print(\$SUM)
-SLUP
+SUP
 );
 
-my $strict_base = bench_case('globals(no-strict)', $slup, [], $strict_prog, $warmup, $iters);
-my $strict_with = bench_case('globals(strict)', $slup, ['--strict-globals'], $strict_prog, $warmup, $iters);
+my $strict_base = bench_case('globals(no-strict)', $sup, [], $strict_prog, $warmup, $iters);
+my $strict_with = bench_case('globals(strict)', $sup, ['--strict-globals'], $strict_prog, $warmup, $iters);
 
 print "\nrecursion benchmark (depth=$depth)\n";
 print_table($rec_base, $rec_with, $depth);
@@ -169,14 +169,14 @@ sub write_program {
 }
 
 sub bench_case {
-    my ($name, $slup_path, $flags, $path, $warmup_runs, $runs) = @_;
+    my ($name, $sup_path, $flags, $path, $warmup_runs, $runs) = @_;
     for (1 .. $warmup_runs) {
-        run_program($slup_path, $flags, $path);
+        run_program($sup_path, $flags, $path);
     }
     my $sum = 0;
     for (1 .. $runs) {
         my $t0 = time();
-        run_program($slup_path, $flags, $path);
+        run_program($sup_path, $flags, $path);
         $sum += (time() - $t0);
     }
     return {
@@ -186,8 +186,8 @@ sub bench_case {
 }
 
 sub run_program {
-    my ($slup_path, $flags, $path) = @_;
-    my @cmd = ('perl', $slup_path, @$flags, $path);
+    my ($sup_path, $flags, $path) = @_;
+    my @cmd = ('perl', $sup_path, @$flags, $path);
     my $pid = fork();
     die "fork failed: $!\n" unless defined $pid;
     if ($pid == 0) {

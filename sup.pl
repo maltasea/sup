@@ -191,7 +191,7 @@ my %builtins = (
         my $subs = module_subs_ref($current_module);
         die "make-fun-ref: unknown function '$name'\n" unless exists $subs->{$name};
         return {
-            __slup_lambda => 1,
+            __sup_lambda => 1,
             module => $current_module,
             subref => $name,
         };
@@ -204,7 +204,7 @@ my %builtins = (
     'map'    => sub {
         my ($arr, $fn) = @_;
         die "map: first argument must be an array\n" unless ref $arr eq 'ARRAY';
-        die "map: second argument must be fun(...)\n" unless is_slup_lambda($fn);
+        die "map: second argument must be fun(...)\n" unless is_sup_lambda($fn);
         my @out;
         for my $v (@$arr) {
             push @out, invoke_lambda($fn, $v);
@@ -214,7 +214,7 @@ my %builtins = (
     'filter' => sub {
         my ($arr, $fn) = @_;
         die "filter: first argument must be an array\n" unless ref $arr eq 'ARRAY';
-        die "filter: second argument must be fun(...)\n" unless is_slup_lambda($fn);
+        die "filter: second argument must be fun(...)\n" unless is_sup_lambda($fn);
         my @out;
         for my $v (@$arr) {
             push @out, $v if is_truthy_value(invoke_lambda($fn, $v));
@@ -680,7 +680,7 @@ sub resolve_load_path {
     push @candidates, $file;
     if ($file !~ /\.[^\/\\]+$/) {
         push @candidates, "$file.sup";
-        push @candidates, "$file.slup"; # backward compatibility
+        push @candidates, "$file.sup"; # backward compatibility
     }
 
     my $base_dir = $module_dirs{$current_module} // '.';
@@ -688,7 +688,7 @@ sub resolve_load_path {
         push @candidates, File::Spec->catfile($base_dir, $file);
         if ($file !~ /\.[^\/\\]+$/) {
             push @candidates, File::Spec->catfile($base_dir, "$file.sup");
-            push @candidates, File::Spec->catfile($base_dir, "$file.slup"); # backward compatibility
+            push @candidates, File::Spec->catfile($base_dir, "$file.sup"); # backward compatibility
         }
     }
 
@@ -860,7 +860,7 @@ sub resolve_load_path_from_file {
     push @candidates, $target;
     if ($target !~ /\.[^\/\\]+$/) {
         push @candidates, "$target.sup";
-        push @candidates, "$target.slup"; # backward compatibility
+        push @candidates, "$target.sup"; # backward compatibility
     }
 
     if (!File::Spec->file_name_is_absolute($target)) {
@@ -868,7 +868,7 @@ sub resolve_load_path_from_file {
         push @candidates, File::Spec->catfile($base_dir, $target);
         if ($target !~ /\.[^\/\\]+$/) {
             push @candidates, File::Spec->catfile($base_dir, "$target.sup");
-            push @candidates, File::Spec->catfile($base_dir, "$target.slup"); # backward compatibility
+            push @candidates, File::Spec->catfile($base_dir, "$target.sup"); # backward compatibility
         }
     }
 
@@ -1744,7 +1744,7 @@ sub parse_lambda_expr {
     die "$label: expected at least one parameter\n" unless @params;
 
     return {
-        __slup_lambda => 1,
+        __sup_lambda => 1,
         module => $current_module,
         params => \@params,
         body => $body_raw,
@@ -1761,14 +1761,14 @@ sub maybe_parse_lambda_expr {
     return parse_lambda_expr($trimmed, $label);
 }
 
-sub is_slup_lambda {
+sub is_sup_lambda {
     my ($value) = @_;
-    return ref($value) eq 'HASH' && $value->{__slup_lambda};
+    return ref($value) eq 'HASH' && $value->{__sup_lambda};
 }
 
 sub invoke_lambda {
     my ($fn, @args) = @_;
-    die "lambda: expected fun(...)\n" unless is_slup_lambda($fn);
+    die "lambda: expected fun(...)\n" unless is_sup_lambda($fn);
 
     if (exists $fn->{subref}) {
         my $target_module = $fn->{module} // $current_module;
@@ -1841,7 +1841,7 @@ sub light_escape_string {
     return "\"$raw\"";
 }
 
-sub light_regex_literal_to_slup {
+sub light_regex_literal_to_sup {
     my ($pat, $flags) = @_;
     $pat //= '';
     $flags //= '';
@@ -2145,7 +2145,7 @@ sub light_parse_primary {
     die "unexpected token '$tok->{value}' in expression\n";
 }
 
-sub light_ast_to_slup {
+sub light_ast_to_sup {
     my ($node, $as_callee) = @_;
     $as_callee //= 0;
     my $type = $node->{type};
@@ -2166,41 +2166,41 @@ sub light_ast_to_slup {
         return $as_callee ? $node->{value} : '$' . $node->{value};
     }
     if ($type eq 'regex') {
-        return light_regex_literal_to_slup($node->{pat}, $node->{flags});
+        return light_regex_literal_to_sup($node->{pat}, $node->{flags});
     }
     if ($type eq 'subst') {
         die "substitution token can only be used with '=~'";
     }
     if ($type eq 'array') {
-        return '[' . join(', ', map { light_ast_to_slup($_, 0) } @{$node->{items}}) . ']';
+        return '[' . join(', ', map { light_ast_to_sup($_, 0) } @{$node->{items}}) . ']';
     }
     if ($type eq 'dict') {
         my @pairs;
         for my $pair (@{$node->{pairs}}) {
-            my $k = light_ast_to_slup($pair->{key}, 0);
-            my $v = light_ast_to_slup($pair->{val}, 0);
+            my $k = light_ast_to_sup($pair->{key}, 0);
+            my $v = light_ast_to_sup($pair->{val}, 0);
             push @pairs, "$k: $v";
         }
         return '{' . join(', ', @pairs) . '}';
     }
     if ($type eq 'call') {
-        my $callee = light_ast_to_slup($node->{callee}, 1);
+        my $callee = light_ast_to_sup($node->{callee}, 1);
         die "call target must be an identifier\n" if $callee =~ /^\$/;
-        my @args = map { light_ast_to_slup($_, 0) } @{$node->{args}};
+        my @args = map { light_ast_to_sup($_, 0) } @{$node->{args}};
         return "$callee(" . join(', ', @args) . ")";
     }
     if ($type eq 'index') {
-        return "get(" . light_ast_to_slup($node->{base}, 0) . ", " .
-            light_ast_to_slup($node->{idx}, 0) . ")";
+        return "get(" . light_ast_to_sup($node->{base}, 0) . ", " .
+            light_ast_to_sup($node->{idx}, 0) . ")";
     }
     if ($type eq 'unary') {
-        my $rhs = light_ast_to_slup($node->{expr}, 0);
+        my $rhs = light_ast_to_sup($node->{expr}, 0);
         return $rhs if $node->{op} eq '+';
         return "sub(0, $rhs)" if $node->{op} eq '-';
         return "not($rhs)" if $node->{op} eq 'not';
     }
     if ($type eq 'bin') {
-        my $lhs = light_ast_to_slup($node->{left}, 0);
+        my $lhs = light_ast_to_sup($node->{left}, 0);
         my %map = (
             '+' => 'add',
             '-' => 'sub',
@@ -2223,14 +2223,14 @@ sub light_ast_to_slup {
                     light_escape_string($node->{right}{rep}) . ", " .
                     light_escape_string($node->{right}{flags}) . ")";
             }
-            my $rhs = light_ast_to_slup($node->{right}, 0);
+            my $rhs = light_ast_to_sup($node->{right}, 0);
             return "matchrx($lhs, $rhs)";
         }
         if ($node->{op} eq '!~') {
-            my $rhs = light_ast_to_slup($node->{right}, 0);
+            my $rhs = light_ast_to_sup($node->{right}, 0);
             return "not(matchrx($lhs, $rhs))";
         }
-        my $rhs = light_ast_to_slup($node->{right}, 0);
+        my $rhs = light_ast_to_sup($node->{right}, 0);
         my $fn = $map{$node->{op}} // die "unsupported operator '$node->{op}'\n";
         return "$fn($lhs, $rhs)";
     }
@@ -2253,7 +2253,7 @@ sub maybe_normalize_light_expr {
     my $ast = eval { light_parse_expr($tokens, \$pos) };
     return $expr if $@;
     return $expr unless light_peek($tokens, \$pos)->{type} eq 'eof';
-    my $out = eval { light_ast_to_slup($ast, 0) };
+    my $out = eval { light_ast_to_sup($ast, 0) };
     return $expr if $@;
     return $out;
 }
@@ -2687,7 +2687,7 @@ sub eval_expr {
         }
 
         my ($found_fn, $fn_value) = local_var_lookup($current_module, $fname);
-        if ($found_fn && is_slup_lambda($fn_value)) {
+        if ($found_fn && is_sup_lambda($fn_value)) {
             return invoke_lambda($fn_value, @evaled);
         }
 

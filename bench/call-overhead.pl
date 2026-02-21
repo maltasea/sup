@@ -10,15 +10,15 @@ my $calls = 20_000;
 my $iters = 5;
 my $warmup = 1;
 my $impl = 'perl';
-my $slup_path;
+my $sup_path;
 
 GetOptions(
     'calls=i'  => \$calls,
     'iters=i'  => \$iters,
     'warmup=i' => \$warmup,
     'impl=s'   => \$impl,
-    'slup=s'   => \$slup_path,
-) or die "Usage: perl bench/call-overhead.pl [--calls N] [--iters N] [--warmup N] [--impl perl|ocaml] [--slup PATH]\n";
+    'sup=s'   => \$sup_path,
+) or die "Usage: perl bench/call-overhead.pl [--calls N] [--iters N] [--warmup N] [--impl perl|ocaml] [--sup PATH]\n";
 
 die "--calls must be > 0\n" unless $calls > 0;
 die "--iters must be > 0\n" unless $iters > 0;
@@ -26,13 +26,13 @@ die "--warmup must be >= 0\n" unless $warmup >= 0;
 die "--impl must be one of: perl, ocaml\n" unless $impl eq 'perl' || $impl eq 'ocaml';
 
 my $root = File::Spec->rel2abs(File::Spec->catdir(File::Spec->curdir()));
-if (!defined $slup_path || $slup_path eq '') {
-    $slup_path = $impl eq 'perl'
+if (!defined $sup_path || $sup_path eq '') {
+    $sup_path = $impl eq 'perl'
         ? File::Spec->catfile($root, 'sup.pl')
         : File::Spec->catfile($root, '_build', 'default', 'sup.exe');
 }
-die "Cannot find interpreter at $slup_path\n" unless -f $slup_path;
-my $runner = $impl eq 'perl' ? ['perl', $slup_path] : [$slup_path];
+die "Cannot find interpreter at $sup_path\n" unless -f $sup_path;
+my $runner = $impl eq 'perl' ? ['perl', $sup_path] : [$sup_path];
 
 my $tmp = tempdir(CLEANUP => 1);
 my $program_no_fn = File::Spec->catfile($tmp, 'no-function.sup');
@@ -42,19 +42,19 @@ my $ones = join(',', (1) x $calls);
 
 write_program(
     $program_no_fn,
-    <<"SLUP"
+    <<"SUP"
 set \@nums = [$ones]
 set \$sum = 0
 foreach \$n \@nums
   set \$sum = add(\$sum, add(\$n, 1))
 end
 print(\$sum)
-SLUP
+SUP
 );
 
 write_program(
     $program_fn,
-    <<"SLUP"
+    <<"SUP"
 defun inc(\$x)
   return(add(\$x, 1))
 end
@@ -64,13 +64,13 @@ foreach \$n \@nums
   set \$sum = add(\$sum, inc(\$n))
 end
 print(\$sum)
-SLUP
+SUP
 );
 
 my $base = bench_case('baseline(no-function)', $program_no_fn, $warmup, $iters, $runner);
 my $with_fn = bench_case('with-function-calls', $program_fn, $warmup, $iters, $runner);
 
-printf "impl: %s (%s)\n", $impl, $slup_path;
+printf "impl: %s (%s)\n", $impl, $sup_path;
 printf "\n%-20s %10s %10s\n", 'case', 'avg(s)', 'calls/s';
 printf "%-20s %10.4f %10.0f\n", $base->{name}, $base->{avg_s}, $calls / $base->{avg_s};
 printf "%-20s %10.4f %10.0f\n", $with_fn->{name}, $with_fn->{avg_s}, $calls / $with_fn->{avg_s};

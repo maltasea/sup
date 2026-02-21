@@ -7,7 +7,7 @@ use File::Temp qw(tempdir);
 use FindBin qw($Bin);
 use File::Spec;
 
-my $slup = File::Spec->catfile($Bin, '..', 'sup.pl');
+my $sup = File::Spec->catfile($Bin, '..', 'sup.pl');
 
 sub write_text {
     my ($path, $content) = @_;
@@ -20,7 +20,7 @@ sub write_text {
 
 sub run_check {
     my ($path) = @_;
-    my $cmd = qq{perl "$slup" --check "$path" 2>&1};
+    my $cmd = qq{perl "$sup" --check "$path" 2>&1};
     my $out = `$cmd`;
     my $status = $? >> 8;
     return ($status, $out);
@@ -28,13 +28,13 @@ sub run_check {
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'mod.sup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'mod.sup'), <<'SUP');
 $DB_HOST = "localhost"
-SLUP
-    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
+SUP
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SUP');
 global $DB_HOST required
 load("mod")
-SLUP
+SUP
     my ($status, $out) = run_check(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'required global assigned through load() passes static check');
     is($out, '', 'successful static check is silent');
@@ -42,9 +42,9 @@ SLUP
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SUP');
 global $API_KEY required
-SLUP
+SUP
     my ($status, $out) = run_check(File::Spec->catfile($dir, 'main.sup'));
     ok($status != 0, 'missing required global fails static check');
     like($out, qr/required global is never assigned: '\$API_KEY'/, 'missing required global error is clear');
@@ -52,9 +52,9 @@ SLUP
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SUP');
 $UNDECLARED = "x"
-SLUP
+SUP
     my ($status, $out) = run_check(File::Spec->catfile($dir, 'main.sup'));
     ok($status != 0, 'undeclared global assignment fails static check');
     like($out, qr/undeclared global assignment: '\$UNDECLARED'/, 'undeclared assignment error is clear');
@@ -62,10 +62,10 @@ SLUP
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SUP');
 global $db_host required
 $db_host = "localhost"
-SLUP
+SUP
     my ($status, $out) = run_check(File::Spec->catfile($dir, 'main.sup'));
     ok($status != 0, 'non-uppercase global declaration fails static check');
     like($out, qr/global name must be uppercase/, 'global declaration naming rule is clear');
@@ -73,9 +73,9 @@ SLUP
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SUP');
 global $DB_PORT default("5432")
-SLUP
+SUP
     my ($status, $out) = run_check(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'declared global with default passes without assignment');
     is($out, '', 'default declaration passes without errors');
@@ -83,11 +83,11 @@ SLUP
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SUP');
 global $DB_HOST required
 set $path = "mod"
 load($path)
-SLUP
+SUP
     my ($status, $out) = run_check(File::Spec->catfile($dir, 'main.sup'));
     ok($status != 0, 'dynamic load fails static check');
     like($out, qr/static check requires load\("literal"\)/, 'dynamic load limitation is reported clearly');
