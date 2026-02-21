@@ -1,15 +1,15 @@
-# Slup Mapping For `perl-funcs.md` and `shell-posix-builtins.md`
+# Sup Mapping For `perl-funcs.md` and `shell-posix-builtins.md`
 
-This maps Perl function families to Slup for a shell-first language.
+This maps Perl function families to Sup for a shell-first language.
 
 ## Policy
 
-- Slup core stays procedural and shell-focused.
+- Sup core stays procedural and shell-focused.
 - OOP crossing is blocked in the Perl bridge (`perl.call` rejects blessed refs in args/results).
-- Prefer native Slup built-ins for common scripting tasks.
+- Prefer native Sup built-ins for common scripting tasks.
 - Use `sys(...)` for advanced POSIX or external Perl modules.
 
-## Native Slup (Built-in)
+## Native Sup (Built-in)
 
 - File write/read/check:
   - `text->file`, `file->append`, `file->text`, `file->lines`, `lines->file`, `file->exists`, `file->remove`
@@ -49,7 +49,7 @@ set %h = sys("perl.call", "Digest::SHA", "sha256_hex", ["abc"])
 print(dict-get(%h, "result"))
 ```
 
-## Out Of Scope For Core Slup
+## Out Of Scope For Core Sup
 
 These stay out of core unless there is repeated shell-first demand:
 
@@ -64,8 +64,8 @@ These stay out of core unless there is repeated shell-first demand:
 - Shell job-control/history internals:
   - `bg`, `fg`, `jobs`, `fc`, `hash`, `alias`, `unalias`
 
-## From `perl-funcs.md` To Slup: Practical Rule
+## From `perl-funcs.md` To Sup: Practical Rule
 
-- Needed often in shell scripts: add/keep native Slup built-in.
+- Needed often in shell scripts: add/keep native Sup built-in.
 - Powerful but platform-specific: expose via `sys(...)` capability.
-- Perl-internal language mechanics: do not mirror in Slup.
+- Perl-internal language mechanics: do not mirror in Sup.
