@@ -16,12 +16,41 @@ and dynarr = {
   mutable len : int;
 }
 
-type sub_def = { params: string list; body: string list }
 type global_decl = {
   required: bool;
   has_default: bool;
   default_expr: string option;
 }
+
+type dict_key =
+  | DictKeySymbol of string
+  | DictKeyExpr of expr
+
+and expr =
+  | EString of string
+  | ENum of float
+  | EVar of string option * string
+  | EArrVar of string option * string
+  | EDictVar of string option * string
+  | EArrayLit of expr list
+  | EDictLit of (dict_key * expr) list
+  | ERegex of Pcre.regexp
+  | ECall of string * expr list
+
+type node =
+  | NGlobalDecl of int * string * global_decl * expr option
+  | NSetVar of int * string * expr
+  | NGlobalSet of int * string * expr
+  | NSetArr of int * string * expr
+  | NSetDict of int * string * expr
+  | NReturn of int * expr option
+  | NIf of int * expr * node list * node list
+  | NSubDef of int * string * string list * node list
+  | NAlias of int * string * string
+  | NForeach of int * string * string * node list
+  | NCall of int * expr
+
+type sub_def = { params: string list; body: node list }
 
 (* ============================================================
    Helpers
@@ -71,6 +100,7 @@ let module_arrays : (string, (string, value) Hashtbl.t) Hashtbl.t = Hashtbl.crea
 let module_dicts : (string, (string, value) Hashtbl.t) Hashtbl.t = Hashtbl.create 16
 let module_subs : (string, (string, sub_def) Hashtbl.t) Hashtbl.t = Hashtbl.create 16
 let module_dirs : (string, string) Hashtbl.t = Hashtbl.create 16
+let module_var_frames : (string, (string, value) Hashtbl.t list ref) Hashtbl.t = Hashtbl.create 16
 
 let builtins : (string, value list -> value) Hashtbl.t = Hashtbl.create 64
 let global_decls : (string, global_decl) Hashtbl.t = Hashtbl.create 64
@@ -181,14 +211,60 @@ let module_arrays_ref module_name = ensure_module_table module_arrays module_nam
 let module_dicts_ref module_name = ensure_module_table module_dicts module_name
 let module_subs_ref module_name = ensure_module_table module_subs module_name
 
+let module_var_frames_ref module_name =
+  match hashtbl_find_opt module_var_frames module_name with
+  | Some frames -> frames
+  | None ->
+    let base = module_vars_ref module_name in
+    let frames = ref [base] in
+    Hashtbl.replace module_var_frames module_name frames;
+    frames
+
+let rec module_var_lookup_in_frames name = function
+  | [] -> None
+  | frame :: rest ->
+    (match hashtbl_find_opt frame name with
+    | Some v -> Some v
+    | None -> module_var_lookup_in_frames name rest)
+
+let module_var_lookup module_name name =
+  let frames = !(module_var_frames_ref module_name) in
+  module_var_lookup_in_frames name frames
+
+let module_var_set module_name name value =
+  match !(module_var_frames_ref module_name) with
+  | frame :: _ -> Hashtbl.replace frame name value
+  | [] -> failwith ("no frame for module " ^ module_name)
+
+let module_var_remove_top module_name name =
+  match !(module_var_frames_ref module_name) with
+  | frame :: _ -> Hashtbl.remove frame name
+  | [] -> ()
+
+let module_var_find_top module_name name =
+  match !(module_var_frames_ref module_name) with
+  | frame :: _ -> hashtbl_find_opt frame name
+  | [] -> None
+
+let push_module_var_frame module_name =
+  let frames = module_var_frames_ref module_name in
+  frames := (Hashtbl.create 16) :: !frames
+
+let pop_module_var_frame module_name =
+  let frames = module_var_frames_ref module_name in
+  match !frames with
+  | _ :: rest when rest <> [] -> frames := rest
+  | _ -> ()
+
 let () =
   ignore (module_vars_ref main_module);
+  ignore (module_var_frames_ref main_module);
   ignore (module_arrays_ref main_module);
   ignore (module_dicts_ref main_module);
   ignore (module_subs_ref main_module);
   Hashtbl.replace module_dirs main_module "."
 
-(* Forward ref so load builtin can call run_lines *)
+(* Forward ref so load builtin can call run_program *)
 let run_lines_ref : (string list -> unit) ref = ref (fun _ -> ())
 let call_depth = ref 0
 let returning = ref false
@@ -220,6 +296,9 @@ let re_return = Str.regexp {|^return[ 	]*(\(.*\))[ 	]*$|}
 let re_bare_call = Str.regexp {|^[^ 	(][^ 	(]*[ 	]*(|}
 let re_number = Str.regexp {|^-?[0-9]+\(\.[0-9]+\)?$|}
 let re_regex_lit = Str.regexp {|^#"\(.*\)"$|}
+let re_end = Str.regexp {|^end\([ 	].*\)?$|}
+let re_else = Str.regexp {|^else\([ 	].*\)?$|}
+let re_global_default = Str.regexp {|^default[ 	]*(\(.*\))[ 	]*$|}
 
 let re_matches rex s = Str.string_match rex s 0
 
@@ -227,14 +306,11 @@ let is_blank_or_comment s =
   let trimmed = String.trim s in
   trimmed = "" || (String.length trimmed > 0 && trimmed.[0] = '#')
 
-let starts_block s =
-  re_matches (Str.regexp {|^\(if\|sub\|foreach\)[ 	]|}) s
-
 let is_end s =
-  re_matches (Str.regexp {|^end\([ 	].*\)?$|}) s
+  re_matches re_end s
 
 let is_else s =
-  re_matches (Str.regexp {|^else\([ 	].*\)?$|}) s
+  re_matches re_else s
 
 let is_ident_start = function
   | 'A' .. 'Z' | 'a' .. 'z' | '_' -> true
@@ -343,7 +419,7 @@ let parse_global_decl_modifier raw =
       { required = false; has_default = false; default_expr = None }
     else if raw = "required" then
       { required = true; has_default = false; default_expr = None }
-    else if Str.string_match (Str.regexp {|^default[ 	]*(\(.*\))[ 	]*$|}) raw 0 then
+    else if Str.string_match re_global_default raw 0 then
       let default_expr = Str.matched_group 1 raw in
       { required = false; has_default = true; default_expr = Some default_expr }
     else
@@ -417,8 +493,7 @@ let get_global_var name =
   | None -> Nil
 
 let get_module_var module_name name =
-  let vars = module_vars_ref module_name in
-  match hashtbl_find_opt vars name with
+  match module_var_lookup module_name name with
   | Some v -> v
   | None -> Nil
 
@@ -788,8 +863,7 @@ let parse_string_literal raw =
                 (require_declared_global first "string interpolation" "read";
                 get_global_var first)
               else if is_local_name first then
-                let vars = module_vars_ref !current_module in
-                (match hashtbl_find_opt vars first with
+                (match module_var_lookup !current_module first with
                 | Some v -> v
                 | None -> get_global_var first)
               else
@@ -842,8 +916,12 @@ let split_dict_pair pair =
     Some (left, right)
 
 (* ============================================================
-   eval_expr / exec_line / run_lines — mutually recursive
+   compile / eval / execute
    ============================================================ *)
+
+type block_term =
+  | Block_end
+  | Block_else
 
 let parse_prefixed_symbol expr prefix =
   let len = String.length expr in
@@ -853,367 +931,388 @@ let parse_prefixed_symbol expr prefix =
   else
     None
 
-let rec eval_expr raw_expr =
+let rec compile_expr raw_expr =
   let expr = String.trim raw_expr in
-
-  (* String literal with $var interpolation *)
   if is_string_literal expr then
-    parse_string_literal (String.sub expr 1 (String.length expr - 2))
-
-  (* Number *)
+    EString (String.sub expr 1 (String.length expr - 2))
   else if re_matches re_number expr then
-    Num (float_of_string expr)
-
-  (* Variable *)
+    ENum (float_of_string expr)
   else if String.length expr > 1 && expr.[0] = '$' then begin
     match parse_prefixed_symbol expr '$' with
-    | Some (Some module_name, name) ->
-      if is_global_name name then
-        (require_declared_global name "expression" "read";
-        get_global_var name)
-      else if is_local_name name then
-        get_module_var module_name name
-      else
-        failwith ("Invalid local variable name '$" ^ name ^ "' (locals must be lowercase)")
-    | Some (None, name) ->
-      if is_global_name name then
-        (require_declared_global name "expression" "read";
-        get_global_var name)
-      else if is_local_name name then
-        let vars = module_vars_ref !current_module in
-        (match hashtbl_find_opt vars name with
-        | Some v -> v
-        | None -> get_global_var name)
+    | Some (module_name, name) ->
+      if is_global_name name || is_local_name name then
+        EVar (module_name, name)
       else
         failwith ("Invalid local variable name '$" ^ name ^ "' (locals must be lowercase)")
     | None ->
       failwith ("Cannot evaluate expression: '" ^ expr ^ "'")
   end
-
-  (* Array variable *)
   else if String.length expr > 1 && expr.[0] = '@' then begin
     match parse_prefixed_symbol expr '@' with
-    | Some (Some module_name, name) ->
-      if is_global_name name then
-        (require_declared_global name "expression" "read";
-        get_global_array name)
-      else if is_local_name name then
-        get_module_array module_name name
-      else
-        failwith ("Invalid local array name '@" ^ name ^ "' (locals must be lowercase)")
-    | Some (None, name) ->
-      if is_global_name name then
-        (require_declared_global name "expression" "read";
-        get_global_array name)
-      else if is_local_name name then
-        get_module_array !current_module name
+    | Some (module_name, name) ->
+      if is_global_name name || is_local_name name then
+        EArrVar (module_name, name)
       else
         failwith ("Invalid local array name '@" ^ name ^ "' (locals must be lowercase)")
     | None ->
       failwith ("Cannot evaluate expression: '" ^ expr ^ "'")
   end
-
-  (* Dict variable *)
   else if String.length expr > 1 && expr.[0] = '%' then begin
     match parse_prefixed_symbol expr '%' with
-    | Some (Some module_name, name) ->
-      if is_global_name name then
-        (require_declared_global name "expression" "read";
-        get_global_dict name)
-      else if is_local_name name then
-        get_module_dict module_name name
-      else
-        failwith ("Invalid local dict name '%" ^ name ^ "' (locals must be lowercase)")
-    | Some (None, name) ->
-      if is_global_name name then
-        (require_declared_global name "expression" "read";
-        get_global_dict name)
-      else if is_local_name name then
-        get_module_dict !current_module name
+    | Some (module_name, name) ->
+      if is_global_name name || is_local_name name then
+        EDictVar (module_name, name)
       else
         failwith ("Invalid local dict name '%" ^ name ^ "' (locals must be lowercase)")
     | None ->
       failwith ("Cannot evaluate expression: '" ^ expr ^ "'")
   end
-
-  (* Vector literal: [a, b, c] *)
   else if String.length expr >= 2 && expr.[0] = '[' && expr.[String.length expr - 1] = ']' then
     let inner = String.sub expr 1 (String.length expr - 2) in
     let items = parse_arglist inner in
-    Arr (dynarr_of_list (List.map eval_expr items))
-
-  (* Dict literal: {key: val, "quoted key": val2} *)
+    EArrayLit (List.map compile_expr items)
   else if String.length expr >= 2 && expr.[0] = '{' && expr.[String.length expr - 1] = '}' then
     let inner = String.sub expr 1 (String.length expr - 2) in
-    let h = Hashtbl.create 8 in
-    List.iter (fun pair ->
-      let pair = String.trim pair in
-      match split_dict_pair pair with
-      | None -> failwith ("Bad dict entry: '" ^ pair ^ "'")
-      | Some (kexpr, vexpr) ->
-        let kexpr = String.trim kexpr in
-        let vexpr = String.trim vexpr in
-        let key =
-          if is_symbol_name kexpr then kexpr
-          else to_str (eval_expr kexpr)
-        in
-        Hashtbl.replace h key (eval_expr vexpr)
-    ) (parse_arglist inner);
-    Dict h
-
-  (* Regex literal: #"pattern" *)
+    let items =
+      List.map (fun pair ->
+        let pair = String.trim pair in
+        match split_dict_pair pair with
+        | None -> failwith ("Bad dict entry: '" ^ pair ^ "'")
+        | Some (kexpr, vexpr) ->
+          let kexpr = String.trim kexpr in
+          let vexpr = String.trim vexpr in
+          let key =
+            if is_symbol_name kexpr then
+              DictKeySymbol kexpr
+            else
+              DictKeyExpr (compile_expr kexpr)
+          in
+          (key, compile_expr vexpr)
+      ) (parse_arglist inner)
+    in
+    EDictLit items
   else if re_matches re_regex_lit expr then
     let pat = Str.matched_group 1 expr in
-    Rex (Pcre.regexp pat)
-
-  (* Function call: name( args ) *)
+    ERegex (Pcre.regexp pat)
   else
     match parse_func_call expr with
     | Some (fname, raw_args) ->
       let args = parse_arglist raw_args in
-      let evaled = List.map eval_expr args in
-      if fname = "print" then begin
-        let parts, to_stderr =
-          match split_last evaled with
-          | prefix, Some last when prefix <> [] && to_str last = "1" -> (prefix, true)
-          | _ -> (evaled, false)
-        in
-        let out = String.concat "" (List.map to_str parts) in
-        if to_stderr then
-          Printf.eprintf "%s\n" out
-        else
-          Printf.printf "%s\n" out;
-        Str out
-      end else (
-        match resolve_sub_target fname with
-        | Some (target_module, sub_name) ->
-          let sub = Hashtbl.find (module_subs_ref target_module) sub_name in
-          let vars = module_vars_ref target_module in
-          let saved_vars = Hashtbl.copy vars in
-          let saved_depth = !call_depth in
-          let saved_returning = !returning in
-          let saved_module = !current_module in
-          let restore () =
-            Hashtbl.reset vars;
-            Hashtbl.iter (Hashtbl.replace vars) saved_vars;
-            call_depth := saved_depth;
-            returning := saved_returning;
-            current_module := saved_module
-          in
-          call_depth := !call_depth + 1;
-          returning := false;
-          current_module := target_module;
-          (try
-             let rec bind_params params values =
-               match params with
-               | [] -> ()
-               | p :: ps ->
-                 let v, vs =
-                   match values with
-                   | [] -> (Nil, [])
-                   | x :: xs -> (x, xs)
-                 in
-                 Hashtbl.replace vars p v;
-                 bind_params ps vs
-             in
-             bind_params sub.params evaled;
-             Hashtbl.remove vars "_return";
-             run_lines sub.body;
-             let ret = match hashtbl_find_opt vars "_return" with
-               | Some v -> v | None -> Nil in
-             restore ();
-             ret
-           with exn ->
-             restore ();
-             raise exn)
-        | None ->
-          if Hashtbl.mem builtins fname then
-            (Hashtbl.find builtins fname) evaled
-          else
-            failwith ("Unknown function: " ^ fname)
-      )
+      ECall (fname, List.map compile_expr args)
     | None ->
       failwith ("Cannot evaluate expression: '" ^ expr ^ "'")
 
-and exec_line lines i =
-  let line = String.trim lines.(i) in
+let rec compile_block lines start allow_else =
+  let len = Array.length lines in
+  let rec loop i acc =
+    if i >= len then
+      (List.rev acc, i, None)
+    else
+      let line = String.trim lines.(i) in
+      if is_blank_or_comment line then
+        loop (i + 1) acc
+      else if is_else line then
+        if allow_else then
+          (List.rev acc, i + 1, Some Block_else)
+        else
+          failwith (Printf.sprintf "else without matching if on line %d" (i + 1))
+      else if is_end line then
+        (List.rev acc, i + 1, Some Block_end)
+      else if re_matches re_global_decl line then
+        let name = Str.matched_group 1 line in
+        let raw_mod =
+          try Some (Str.matched_group 3 line)
+          with Not_found -> None
+        in
+        let where = Printf.sprintf "line %d" (i + 1) in
+        let spec =
+          try parse_global_decl_modifier raw_mod
+          with Failure msg -> failwith (where ^ ": " ^ msg)
+        in
+        let default_expr =
+          match spec.default_expr with
+          | Some e when spec.has_default -> Some (compile_expr e)
+          | _ -> None
+        in
+        loop (i + 1) (NGlobalDecl (i + 1, name, spec, default_expr) :: acc)
+      else if re_matches re_set_var line then
+        let name = Str.matched_group 1 line in
+        let expr = Str.matched_group 2 line in
+        loop (i + 1) (NSetVar (i + 1, name, compile_expr expr) :: acc)
+      else if re_matches re_global_set line then
+        let name = Str.matched_group 1 line in
+        let expr = Str.matched_group 2 line in
+        loop (i + 1) (NGlobalSet (i + 1, name, compile_expr expr) :: acc)
+      else if re_matches re_set_arr line then
+        let name = Str.matched_group 1 line in
+        let expr = Str.matched_group 2 line in
+        loop (i + 1) (NSetArr (i + 1, name, compile_expr expr) :: acc)
+      else if re_matches re_set_dict line then
+        let name = Str.matched_group 1 line in
+        let expr = Str.matched_group 2 line in
+        loop (i + 1) (NSetDict (i + 1, name, compile_expr expr) :: acc)
+      else if re_matches re_return line then
+        let raw = Str.matched_group 1 line in
+        let rexpr = if String.trim raw = "" then None else Some (compile_expr raw) in
+        loop (i + 1) (NReturn (i + 1, rexpr) :: acc)
+      else if re_matches re_if line then
+        let cond = Str.matched_group 1 line in
+        let cexpr = compile_expr cond in
+        let true_body, next_i, term = compile_block lines (i + 1) true in
+        begin
+          match term with
+          | Some Block_end ->
+            loop next_i (NIf (i + 1, cexpr, true_body, []) :: acc)
+          | Some Block_else ->
+            let false_body, after_false, term2 = compile_block lines next_i false in
+            (match term2 with
+            | Some Block_end ->
+              loop after_false (NIf (i + 1, cexpr, true_body, false_body) :: acc)
+            | _ ->
+              failwith (Printf.sprintf "if without matching end on line %d" (i + 1)))
+          | None ->
+            failwith (Printf.sprintf "if without matching end on line %d" (i + 1))
+        end
+      else if re_matches re_sub_def line then
+        let name = Str.matched_group 1 line in
+        if not (is_symbol_name name) then
+          failwith (Printf.sprintf "Syntax error on line %d: %s" (i + 1) line);
+        let raw_params = Str.matched_group 2 line in
+        let params =
+          list_filter_map (fun s ->
+            let p = String.trim s in
+            if p = "" then None
+            else
+              let p =
+                if String.length p > 0 && p.[0] = '$' then
+                  String.sub p 1 (String.length p - 1)
+                else
+                  p
+              in
+              if not (is_local_name p) then
+                failwith ("Invalid parameter name '$" ^ p ^ "' (locals must be lowercase)");
+              Some p
+          ) (String.split_on_char ',' raw_params)
+        in
+        let body, next_i, term = compile_block lines (i + 1) false in
+        (match term with
+        | Some Block_end ->
+          loop next_i (NSubDef (i + 1, name, params, body) :: acc)
+        | _ ->
+          failwith (Printf.sprintf "sub without matching end on line %d" (i + 1)))
+      else if re_matches re_alias line then
+        let new_name = Str.matched_group 1 line in
+        let old_name = Str.matched_group 2 line in
+        if not (is_symbol_name new_name) then
+          failwith (Printf.sprintf "Syntax error on line %d: %s" (i + 1) line);
+        loop (i + 1) (NAlias (i + 1, new_name, old_name) :: acc)
+      else if re_matches re_foreach line then
+        let var = Str.matched_group 1 line in
+        let arrname = Str.matched_group 2 line in
+        if not (is_global_name var || is_local_name var) then
+          failwith ("Invalid local variable name '$" ^ var ^ "' (locals must be lowercase)");
+        let body, next_i, term = compile_block lines (i + 1) false in
+        (match term with
+        | Some Block_end ->
+          loop next_i (NForeach (i + 1, var, arrname, body) :: acc)
+        | _ ->
+          failwith (Printf.sprintf "foreach without matching end on line %d" (i + 1)))
+      else if re_matches re_bare_call line then
+        loop (i + 1) (NCall (i + 1, compile_expr line) :: acc)
+      else
+        failwith (Printf.sprintf "Syntax error on line %d: %s" (i + 1) line)
+  in
+  loop start []
 
-  (* blank / comment *)
-  if is_blank_or_comment line then i + 1
+let compile_program lines =
+  let arr = Array.of_list lines in
+  let nodes, next_i, term = compile_block arr 0 false in
+  match term with
+  | None -> nodes
+  | Some Block_else ->
+    failwith (Printf.sprintf "else without matching if on line %d" next_i)
+  | Some Block_end ->
+    failwith (Printf.sprintf "end without matching block on line %d" next_i)
 
-  (* global $NAME [required|default(...)] *)
-  else if re_matches re_global_decl line then begin
-    let name = Str.matched_group 1 line in
-    let raw_mod =
-      try Some (Str.matched_group 3 line)
-      with Not_found -> None
-    in
-    let where = Printf.sprintf "line %d" (i + 1) in
-    let spec =
-      try parse_global_decl_modifier raw_mod
-      with Failure msg -> failwith (where ^ ": " ^ msg)
-    in
+let run_nodes_ref : (node list -> unit) ref = ref (fun _ -> ())
+
+let rec eval_expr = function
+  | EString raw ->
+    parse_string_literal raw
+  | ENum f ->
+    Num f
+  | EVar (Some module_name, name) ->
+    if is_global_name name then
+      (require_declared_global name "expression" "read";
+      get_global_var name)
+    else if is_local_name name then
+      get_module_var module_name name
+    else
+      failwith ("Invalid local variable name '$" ^ name ^ "' (locals must be lowercase)")
+  | EVar (None, name) ->
+    if is_global_name name then
+      (require_declared_global name "expression" "read";
+      get_global_var name)
+    else if is_local_name name then
+      (match module_var_lookup !current_module name with
+      | Some v -> v
+      | None -> get_global_var name)
+    else
+      failwith ("Invalid local variable name '$" ^ name ^ "' (locals must be lowercase)")
+  | EArrVar (Some module_name, name) ->
+    if is_global_name name then
+      (require_declared_global name "expression" "read";
+      get_global_array name)
+    else if is_local_name name then
+      get_module_array module_name name
+    else
+      failwith ("Invalid local array name '@" ^ name ^ "' (locals must be lowercase)")
+  | EArrVar (None, name) ->
+    if is_global_name name then
+      (require_declared_global name "expression" "read";
+      get_global_array name)
+    else if is_local_name name then
+      get_module_array !current_module name
+    else
+      failwith ("Invalid local array name '@" ^ name ^ "' (locals must be lowercase)")
+  | EDictVar (Some module_name, name) ->
+    if is_global_name name then
+      (require_declared_global name "expression" "read";
+      get_global_dict name)
+    else if is_local_name name then
+      get_module_dict module_name name
+    else
+      failwith ("Invalid local dict name '%" ^ name ^ "' (locals must be lowercase)")
+  | EDictVar (None, name) ->
+    if is_global_name name then
+      (require_declared_global name "expression" "read";
+      get_global_dict name)
+    else if is_local_name name then
+      get_module_dict !current_module name
+    else
+      failwith ("Invalid local dict name '%" ^ name ^ "' (locals must be lowercase)")
+  | EArrayLit items ->
+    Arr (dynarr_of_list (List.map eval_expr items))
+  | EDictLit items ->
+    let h = Hashtbl.create 8 in
+    List.iter (fun (k, vexpr) ->
+      let key =
+        match k with
+        | DictKeySymbol s -> s
+        | DictKeyExpr e -> to_str (eval_expr e)
+      in
+      Hashtbl.replace h key (eval_expr vexpr)
+    ) items;
+    Dict h
+  | ERegex rex ->
+    Rex rex
+  | ECall (fname, args) ->
+    let evaled = List.map eval_expr args in
+    if fname = "print" then begin
+      let parts, to_stderr =
+        match split_last evaled with
+        | prefix, Some last when prefix <> [] && to_str last = "1" -> (prefix, true)
+        | _ -> (evaled, false)
+      in
+      let out = String.concat "" (List.map to_str parts) in
+      if to_stderr then Printf.eprintf "%s\n" out else Printf.printf "%s\n" out;
+      Str out
+    end else (
+      match resolve_sub_target fname with
+      | Some (target_module, sub_name) ->
+        let sub = Hashtbl.find (module_subs_ref target_module) sub_name in
+        let saved_depth = !call_depth in
+        let saved_returning = !returning in
+        let saved_module = !current_module in
+        push_module_var_frame target_module;
+        let restore () =
+          pop_module_var_frame target_module;
+          call_depth := saved_depth;
+          returning := saved_returning;
+          current_module := saved_module
+        in
+        call_depth := !call_depth + 1;
+        returning := false;
+        current_module := target_module;
+        (try
+           let rec bind_params params values =
+             match params with
+             | [] -> ()
+             | p :: ps ->
+               let v, vs =
+                 match values with
+                 | [] -> (Nil, [])
+                 | x :: xs -> (x, xs)
+               in
+               module_var_set target_module p v;
+               bind_params ps vs
+           in
+           bind_params sub.params evaled;
+           module_var_remove_top target_module "_return";
+           !run_nodes_ref sub.body;
+           let ret = match module_var_find_top target_module "_return" with
+             | Some v -> v | None -> Nil in
+           restore ();
+           ret
+         with exn ->
+           restore ();
+           raise exn)
+      | None ->
+        if Hashtbl.mem builtins fname then
+          (Hashtbl.find builtins fname) evaled
+        else
+          failwith ("Unknown function: " ^ fname)
+    )
+
+and exec_node = function
+  | NGlobalDecl (line_no, name, spec, default_expr) ->
+    let where = Printf.sprintf "line %d" line_no in
     declare_global_spec name spec where;
-    (match spec.default_expr with
+    (match default_expr with
     | Some expr when spec.has_default && not (Hashtbl.mem globals name) ->
       Hashtbl.replace globals name (eval_expr expr)
-    | _ -> ());
-    i + 1
-  end
-
-  (* set $var = expr *)
-  else if re_matches re_set_var line then begin
-    let name = Str.matched_group 1 line in
-    let expr = Str.matched_group 2 line in
+    | _ -> ())
+  | NSetVar (line_no, name, expr) ->
     if is_global_name name then begin
-      require_declared_global name
-        (Printf.sprintf "line %d" (i + 1)) "assignment";
+      require_declared_global name (Printf.sprintf "line %d" line_no) "assignment";
       Hashtbl.replace globals name (eval_expr expr)
     end else if is_local_name name then
-      Hashtbl.replace (module_vars_ref !current_module) name (eval_expr expr)
+      module_var_set !current_module name (eval_expr expr)
     else
-      failwith ("Invalid local variable name '$" ^ name ^ "' (locals must be lowercase)");
-    i + 1
-  end
-
-  (* $GLOBAL = expr *)
-  else if re_matches re_global_set line then begin
-    let name = Str.matched_group 1 line in
-    let expr = Str.matched_group 2 line in
+      failwith ("Invalid local variable name '$" ^ name ^ "' (locals must be lowercase)")
+  | NGlobalSet (line_no, name, expr) ->
     if not (is_global_name name) then
       failwith ("Global names must be uppercase: '$" ^ name ^ "'");
-    require_declared_global name
-      (Printf.sprintf "line %d" (i + 1)) "assignment";
-    Hashtbl.replace globals name (eval_expr expr);
-    i + 1
-  end
-
-  (* set @arr = expr *)
-  else if re_matches re_set_arr line then begin
-    let name = Str.matched_group 1 line in
-    let expr = Str.matched_group 2 line in
+    require_declared_global name (Printf.sprintf "line %d" line_no) "assignment";
+    Hashtbl.replace globals name (eval_expr expr)
+  | NSetArr (line_no, name, expr) ->
     if is_global_name name then begin
-      require_declared_global name
-        (Printf.sprintf "line %d" (i + 1)) "assignment";
+      require_declared_global name (Printf.sprintf "line %d" line_no) "assignment";
       Hashtbl.replace global_arrays name (eval_expr expr)
     end else if is_local_name name then
       Hashtbl.replace (module_arrays_ref !current_module) name (eval_expr expr)
     else
-      failwith ("Invalid local array name '@" ^ name ^ "' (locals must be lowercase)");
-    i + 1
-  end
-
-  (* set %dict = expr *)
-  else if re_matches re_set_dict line then begin
-    let name = Str.matched_group 1 line in
-    let expr = Str.matched_group 2 line in
+      failwith ("Invalid local array name '@" ^ name ^ "' (locals must be lowercase)")
+  | NSetDict (line_no, name, expr) ->
     if is_global_name name then begin
-      require_declared_global name
-        (Printf.sprintf "line %d" (i + 1)) "assignment";
+      require_declared_global name (Printf.sprintf "line %d" line_no) "assignment";
       Hashtbl.replace global_dicts name (eval_expr expr)
     end else if is_local_name name then
       Hashtbl.replace (module_dicts_ref !current_module) name (eval_expr expr)
     else
-      failwith ("Invalid local dict name '%" ^ name ^ "' (locals must be lowercase)");
-    i + 1
-  end
-
-  (* return(expr) *)
-  else if re_matches re_return line then begin
+      failwith ("Invalid local dict name '%" ^ name ^ "' (locals must be lowercase)")
+  | NReturn (line_no, rexpr) ->
     if !call_depth <= 0 then
-      failwith (Printf.sprintf "return outside sub on line %d" (i + 1));
-    let raw = Str.matched_group 1 line in
-    let ret = if String.trim raw = "" then Nil else eval_expr raw in
-    Hashtbl.replace (module_vars_ref !current_module) "_return" ret;
-    returning := true;
-    i + 1
-  end
-
-  (* if cond ... else ... end *)
-  else if re_matches re_if line then begin
-    let cond = eval_expr (Str.matched_group 1 line) in
-    let truthy = is_truthy cond in
-    let true_block = ref [] in
-    let false_block = ref [] in
-    let depth = ref 1 in
-    let in_else = ref false in
-    let j = ref (i + 1) in
-    let stop = ref false in
-    while !j < Array.length lines && not !stop do
-      let l = String.trim lines.(!j) in
-      if starts_block l then
-        incr depth
-      else if is_end l then begin
-        decr depth;
-        if !depth = 0 then begin stop := true; end
-      end;
-      if not !stop then begin
-        if is_else l && !depth = 1 then
-          in_else := true
-        else if !in_else then
-          false_block := l :: !false_block
-        else
-          true_block := l :: !true_block
-      end;
-      if not !stop then incr j
-    done;
-    if not !stop then
-      failwith (Printf.sprintf "if without matching end on line %d" (i + 1));
-    if truthy then
-      run_lines (List.rev !true_block)
-    else
-      run_lines (List.rev !false_block);
-    !j + 1
-  end
-
-  (* sub name($params) ... end *)
-  else if re_matches re_sub_def line then begin
-    let name = Str.matched_group 1 line in
-    if not (is_symbol_name name) then
-      failwith (Printf.sprintf "Syntax error on line %d: %s" (i + 1) line);
-    let raw_params = Str.matched_group 2 line in
-    let params =
-      list_filter_map (fun s ->
-        let p = String.trim s in
-        if p = "" then None
-        else
-          let p =
-            if String.length p > 0 && p.[0] = '$' then
-              String.sub p 1 (String.length p - 1)
-            else
-              p
-          in
-          if not (is_local_name p) then
-            failwith ("Invalid parameter name '$" ^ p ^ "' (locals must be lowercase)");
-          Some p
-      ) (String.split_on_char ',' raw_params)
-    in
-    let body = ref [] in
-    let depth = ref 1 in
-    let j = ref (i + 1) in
-    let stop = ref false in
-    while !j < Array.length lines && not !stop do
-      let l = String.trim lines.(!j) in
-      if starts_block l then incr depth
-      else if is_end l then begin
-        decr depth;
-        if !depth = 0 then (stop := true)
-      end;
-      if not !stop then body := l :: !body;
-      if not !stop then incr j
-    done;
-    if not !stop then
-      failwith (Printf.sprintf "sub without matching end on line %d" (i + 1));
-    Hashtbl.replace (module_subs_ref !current_module) name { params; body = List.rev !body };
-    !j + 1
-  end
-
-  (* alias new = old *)
-  else if re_matches re_alias line then begin
-    let new_name = Str.matched_group 1 line in
-    let old_name = Str.matched_group 2 line in
-    if not (is_symbol_name new_name) then
-      failwith (Printf.sprintf "Syntax error on line %d: %s" (i + 1) line);
+      failwith (Printf.sprintf "return outside sub on line %d" line_no);
+    let ret = match rexpr with Some e -> eval_expr e | None -> Nil in
+    module_var_set !current_module "_return" ret;
+    returning := true
+  | NIf (_, cond_expr, true_body, false_body) ->
+    let cond = eval_expr cond_expr in
+    if is_truthy cond then run_nodes true_body else run_nodes false_body
+  | NSubDef (_, name, params, body) ->
+    Hashtbl.replace (module_subs_ref !current_module) name { params; body }
+  | NAlias (_, new_name, old_name) ->
     if Hashtbl.mem builtins old_name then
       Hashtbl.replace builtins new_name (Hashtbl.find builtins old_name)
     else
@@ -1222,14 +1321,8 @@ and exec_line lines i =
         Hashtbl.replace (module_subs_ref !current_module) new_name
           (Hashtbl.find (module_subs_ref module_name) sub_name)
       | None ->
-        failwith ("alias: unknown function '" ^ old_name ^ "'"));
-    i + 1
-  end
-
-  (* foreach $var @arr ... end *)
-  else if re_matches re_foreach line then begin
-    let var = Str.matched_group 1 line in
-    let arrname = Str.matched_group 2 line in
+        failwith ("alias: unknown function '" ^ old_name ^ "'"))
+  | NForeach (line_no, var, arrname, body) ->
     if not (is_global_name var || is_local_name var) then
       failwith ("Invalid local variable name '$" ^ var ^ "' (locals must be lowercase)");
     let arr_val =
@@ -1237,8 +1330,7 @@ and exec_line lines i =
       | Some (Some module_name, name) ->
         if is_global_name name then
           (require_declared_global name "expression" "read";
-          get_global_array name
-          )
+          get_global_array name)
         else if is_local_name name then
           get_module_array module_name name
         else
@@ -1246,69 +1338,47 @@ and exec_line lines i =
       | Some (None, name) ->
         if is_global_name name then
           (require_declared_global name "expression" "read";
-          get_global_array name
-          )
+          get_global_array name)
         else if is_local_name name then
           get_module_array !current_module name
         else
           failwith ("Invalid local array name '@" ^ name ^ "' (locals must be lowercase)")
       | None ->
-        failwith (Printf.sprintf "Syntax error on line %d: %s" (i + 1) line)
+        failwith (Printf.sprintf "Syntax error on line %d: foreach $%s @%s" line_no var arrname)
     in
     let arr_snapshot = match arr_val with
       | Arr r -> Array.sub r.data 0 r.len
-      | _ -> [||] in
-    let body = ref [] in
-    let depth = ref 1 in
-    let j = ref (i + 1) in
-    let stop = ref false in
-    while !j < Array.length lines && not !stop do
-      let l = String.trim lines.(!j) in
-      if starts_block l then incr depth
-      else if is_end l then begin
-        decr depth;
-        if !depth = 0 then (stop := true)
-      end;
-      if not !stop then body := l :: !body;
-      if not !stop then incr j
-    done;
-    if not !stop then
-      failwith (Printf.sprintf "foreach without matching end on line %d" (i + 1));
-    let body_lines = List.rev !body in
-    let line_no = i + 1 in
+      | _ -> [||]
+    in
     let rec run_each idx =
       if idx >= Array.length arr_snapshot || !returning then ()
       else begin
         let elem = arr_snapshot.(idx) in
         if is_global_name var then begin
-          require_declared_global var
-            (Printf.sprintf "line %d" line_no) "assignment";
+          require_declared_global var (Printf.sprintf "line %d" line_no) "assignment";
           Hashtbl.replace globals var elem
         end else
-          Hashtbl.replace (module_vars_ref !current_module) var elem;
-        run_lines body_lines;
+          module_var_set !current_module var elem;
+        run_nodes body;
         run_each (idx + 1)
       end
     in
-    run_each 0;
-    !j + 1
-  end
+    run_each 0
+  | NCall (_, expr) ->
+    ignore (eval_expr expr)
 
-  (* Bare function call *)
-  else if re_matches re_bare_call line then begin
-    ignore (eval_expr line);
-    i + 1
-  end
+and run_nodes nodes =
+  let rec loop = function
+    | [] -> ()
+    | _ when !returning -> ()
+    | node :: rest ->
+      exec_node node;
+      loop rest
+  in
+  loop nodes
 
-  else
-    failwith (Printf.sprintf "Syntax error on line %d: %s" (i + 1) line)
-
-and run_lines lines =
-  let arr = Array.of_list lines in
-  let i = ref 0 in
-  while !i < Array.length arr && not !returning do
-    i := exec_line arr !i
-  done
+let run_program lines =
+  run_nodes (compile_program lines)
 
 (* ============================================================
    register_builtins
@@ -1636,6 +1706,7 @@ let register_builtins () =
     let module_name = module_name_from_file path in
     Hashtbl.replace module_dirs module_name (Filename.dirname path);
     ignore (module_vars_ref module_name);
+    ignore (module_var_frames_ref module_name);
     ignore (module_arrays_ref module_name);
     ignore (module_dicts_ref module_name);
     ignore (module_subs_ref module_name);
@@ -1731,7 +1802,8 @@ let register_builtins () =
 
 let () =
   register_builtins ();
-  run_lines_ref := run_lines;
+  run_lines_ref := run_program;
+  run_nodes_ref := run_nodes;
   let argv = ref (Array.to_list Sys.argv |> List.tl) in
   let check_mode = ref false in
   let rec consume_options () =
@@ -1804,6 +1876,6 @@ let () =
   ) (Unix.environment ());
   predeclare_global_if_missing "ENV";
   Hashtbl.replace global_dicts "ENV" (Dict env_dict);
-  run_lines lines;
+  run_program lines;
   if !strict_globals_mode then
     validate_required_globals_runtime ()
