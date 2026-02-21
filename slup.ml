@@ -11,21 +11,14 @@ type value =
   | Arr of dynarr
   | Dict of (string, value) Hashtbl.t
   | Rex of Pcre.regexp
+  | Lambda of string list * expr
 and dynarr = {
   mutable data : value array;
   mutable len : int;
 }
-
-type global_decl = {
-  required: bool;
-  has_default: bool;
-  default_expr: string option;
-}
-
-type dict_key =
+and dict_key =
   | DictKeySymbol of string
   | DictKeyExpr of expr
-
 and expr =
   | EString of string
   | ENum of float
@@ -36,6 +29,13 @@ and expr =
   | EDictLit of (dict_key * expr) list
   | ERegex of Pcre.regexp
   | ECall of string * expr list
+  | ELambda of string list * expr
+
+type global_decl = {
+  required: bool;
+  has_default: bool;
+  default_expr: string option;
+}
 
 type node =
   | NGlobalDecl of int * string * global_decl * expr option
@@ -68,11 +68,13 @@ let to_str = function
   | Arr _ -> "<array>"
   | Dict _ -> "<dict>"
   | Rex _ -> "<regex>"
+  | Lambda _ -> "<function>"
 
 let to_num = function
   | Nil -> 0.0
   | Num f -> f
   | Str s -> (try float_of_string s with Failure _ -> 0.0)
+  | Lambda _ -> 0.0
   | _ -> 0.0
 
 let is_truthy = function
@@ -84,6 +86,7 @@ let is_truthy = function
   | Arr _ -> true
   | Dict _ -> true
   | Rex _ -> true
+  | Lambda _ -> true
 
 (* ============================================================
    Global state
@@ -1006,6 +1009,45 @@ let rec compile_expr raw_expr =
     EArrayLit (List.map compile_expr items)
   else if String.length expr >= 2 && expr.[0] = '{' && expr.[String.length expr - 1] = '}' then
     let inner = String.sub expr 1 (String.length expr - 2) in
+    (* Check for lambda: {$x -> body} or {$a, $b -> body} *)
+    let is_lambda =
+      let trimmed = String.trim inner in
+      String.length trimmed > 0 && trimmed.[0] = '$' &&
+      let len = String.length trimmed in
+      let rec scan i depth =
+        if i > len - 2 then false
+        else if trimmed.[i] = '(' then scan (i + 1) (depth + 1)
+        else if trimmed.[i] = ')' then scan (i + 1) (depth - 1)
+        else if depth = 0 && trimmed.[i] = '-' && trimmed.[i + 1] = '>' then true
+        else scan (i + 1) depth
+      in
+      scan 0 0
+    in
+    if is_lambda then begin
+      let trimmed = String.trim inner in
+      let len = String.length trimmed in
+      let arrow_pos =
+        let rec scan i depth =
+          if i > len - 2 then failwith "lambda: missing ->"
+          else if trimmed.[i] = '(' then scan (i + 1) (depth + 1)
+          else if trimmed.[i] = ')' then scan (i + 1) (depth - 1)
+          else if depth = 0 && trimmed.[i] = '-' && trimmed.[i + 1] = '>' then i
+          else scan (i + 1) depth
+        in
+        scan 0 0
+      in
+      let params_str = String.trim (String.sub trimmed 0 arrow_pos) in
+      let body_str = String.trim (String.sub trimmed (arrow_pos + 2) (len - arrow_pos - 2)) in
+      let param_parts = String.split_on_char ',' params_str in
+      let params = List.map (fun p ->
+        let p = String.trim p in
+        if String.length p > 1 && p.[0] = '$' then
+          String.sub p 1 (String.length p - 1)
+        else
+          failwith ("lambda: bad parameter '" ^ p ^ "'")
+      ) param_parts in
+      ELambda (params, compile_expr body_str)
+    end else begin
     let items =
       List.map (fun pair ->
         let pair = String.trim pair in
@@ -1024,6 +1066,7 @@ let rec compile_expr raw_expr =
       ) (parse_arglist inner)
     in
     EDictLit items
+    end
   else if re_matches re_regex_lit expr then
     let pat = Str.matched_group 1 expr in
     ERegex (Pcre.regexp pat)
@@ -1276,6 +1319,8 @@ let rec eval_expr = function
     Dict h
   | ERegex rex ->
     Rex rex
+  | ELambda (params, body) ->
+    Lambda (params, body)
   | ECall (fname, args) ->
     let evaled = List.map eval_expr args in
     if fname = "print" then begin
@@ -1525,6 +1570,24 @@ let require_arr fname = function
 let require_dict fname = function
   | Dict h -> h
   | _ -> failwith (fname ^ ": first argument must be a dict")
+
+let require_lambda fname = function
+  | Lambda (params, body) -> (params, body)
+  | _ -> failwith (fname ^ ": argument must be a function")
+
+let invoke_lambda fn args =
+  match fn with
+  | Lambda (params, body) ->
+    push_module_var_frame !current_module;
+    List.iteri (fun i p ->
+      let v = if i < List.length args then List.nth args i else Nil in
+      module_var_set !current_module p v
+    ) params;
+    let result = try eval_expr body with exn ->
+      pop_module_var_frame !current_module; raise exn in
+    pop_module_var_frame !current_module;
+    result
+  | _ -> failwith "expected a function"
 
 let status_to_code = function
   | Unix.WEXITED n -> n
@@ -1877,6 +1940,14 @@ let register_builtins () =
   add "add" (fun a -> Num (nth_num a 0 +. nth_num a 1));
   add "sub" (fun a -> Num (nth_num a 0 -. nth_num a 1));
   add "mul" (fun a -> Num (nth_num a 0 *. nth_num a 1));
+  add "div" (fun a ->
+    let b = nth_num a 1 in
+    if b = 0.0 then failwith "div: division by zero";
+    Num (nth_num a 0 /. b));
+  add "mod" (fun a ->
+    let b = nth_num a 1 in
+    if b = 0.0 then failwith "mod: division by zero";
+    Num (mod_float (nth_num a 0) b));
 
   (* String *)
   add "concat" (fun a -> Str (nth_str a 0 ^ nth_str a 1));
@@ -1913,10 +1984,17 @@ let register_builtins () =
   add "eq" (fun a -> Num (if nth_str a 0 = nth_str a 1 then 1.0 else 0.0));
   add "gt" (fun a -> Num (if nth_num a 0 > nth_num a 1 then 1.0 else 0.0));
   add "lt" (fun a -> Num (if nth_num a 0 < nth_num a 1 then 1.0 else 0.0));
+  add "ne" (fun a -> Num (if nth_str a 0 <> nth_str a 1 then 1.0 else 0.0));
+  add "ge" (fun a -> Num (if nth_num a 0 >= nth_num a 1 then 1.0 else 0.0));
+  add "le" (fun a -> Num (if nth_num a 0 <= nth_num a 1 then 1.0 else 0.0));
+  add "and" (fun a -> Num (if is_truthy (nth_val a 0) && is_truthy (nth_val a 1) then 1.0 else 0.0));
+  add "or" (fun a -> Num (if is_truthy (nth_val a 0) || is_truthy (nth_val a 1) then 1.0 else 0.0));
   add "not" (fun a -> Num (if is_truthy (nth_val a 0) then 0.0 else 1.0));
   add "is-empty" (fun a ->
     let v = nth_val a 0 in
     Num (match v with Nil -> 1.0 | Str "" -> 1.0 | _ -> 0.0));
+  add "true" (fun _ -> Num 1.0);
+  add "false" (fun _ -> Num 0.0);
 
   (* Regex *)
   add "matchrx" (fun a ->
@@ -1991,6 +2069,234 @@ let register_builtins () =
     let key = nth_str a 1 in
     let v = match hashtbl_find_opt h key with Some v -> v | None -> Nil in
     Hashtbl.remove h key; v);
+
+  (* Array helpers *)
+  add "sort" (fun a ->
+    let r = require_arr "sort" (nth_val a 0) in
+    let lst = dynarr_to_list r in
+    let sorted = List.sort (fun a b -> compare (to_str a) (to_str b)) lst in
+    Arr (dynarr_of_list sorted));
+  add "reverse" (fun a ->
+    let r = require_arr "reverse" (nth_val a 0) in
+    Arr (dynarr_of_list (List.rev (dynarr_to_list r))));
+  add "uniq" (fun a ->
+    let r = require_arr "uniq" (nth_val a 0) in
+    let seen = Hashtbl.create 16 in
+    let out = List.filter (fun v ->
+      let k = to_str v in
+      if Hashtbl.mem seen k then false
+      else (Hashtbl.replace seen k true; true)
+    ) (dynarr_to_list r) in
+    Arr (dynarr_of_list out));
+  add "flatten" (fun a ->
+    let r = require_arr "flatten" (nth_val a 0) in
+    let out = ref [] in
+    dynarr_iter (fun v ->
+      match v with
+      | Arr inner -> dynarr_iter (fun x -> out := x :: !out) inner
+      | other -> out := other :: !out
+    ) r;
+    Arr (dynarr_of_list (List.rev !out)));
+  add "zip" (fun a ->
+    let r1 = require_arr "zip" (nth_val a 0) in
+    let r2 = match nth_val a 1 with
+      | Arr r -> r
+      | _ -> failwith "zip: second argument must be an array" in
+    let len = min r1.len r2.len in
+    let out = ref [] in
+    for i = len - 1 downto 0 do
+      let v1 = match dynarr_get r1 i with Some v -> v | None -> Nil in
+      let v2 = match dynarr_get r2 i with Some v -> v | None -> Nil in
+      out := Arr (dynarr_of_list [v1; v2]) :: !out
+    done;
+    Arr (dynarr_of_list !out));
+  add "take" (fun a ->
+    let r = require_arr "take" (nth_val a 0) in
+    let n = int_of_float (nth_num a 1) in
+    let n = min n r.len in
+    let out = ref [] in
+    for i = n - 1 downto 0 do
+      out := (match dynarr_get r i with Some v -> v | None -> Nil) :: !out
+    done;
+    Arr (dynarr_of_list !out));
+  add "drop" (fun a ->
+    let r = require_arr "drop" (nth_val a 0) in
+    let n = int_of_float (nth_num a 1) in
+    if n >= r.len then Arr (dynarr_empty ())
+    else begin
+      let out = ref [] in
+      for i = r.len - 1 downto n do
+        out := (match dynarr_get r i with Some v -> v | None -> Nil) :: !out
+      done;
+      Arr (dynarr_of_list !out)
+    end);
+  add "chunk" (fun a ->
+    let r = require_arr "chunk" (nth_val a 0) in
+    let n = int_of_float (nth_num a 1) in
+    if n <= 0 then failwith "chunk: size must be positive";
+    let lst = dynarr_to_list r in
+    let rec aux acc chunk remaining count =
+      match remaining with
+      | [] -> if chunk = [] then List.rev acc else List.rev (Arr (dynarr_of_list (List.rev chunk)) :: acc)
+      | x :: xs ->
+        if count = n then
+          aux (Arr (dynarr_of_list (List.rev chunk)) :: acc) [x] xs 1
+        else
+          aux acc (x :: chunk) xs (count + 1)
+    in
+    Arr (dynarr_of_list (aux [] [] lst 0)));
+  add "range" (fun a ->
+    let from_n = int_of_float (nth_num a 0) in
+    let to_n = int_of_float (nth_num a 1) in
+    let out = ref [] in
+    if from_n <= to_n then
+      for i = to_n downto from_n do out := Num (float_of_int i) :: !out done
+    else
+      for i = to_n to from_n do out := Num (float_of_int i) :: !out done;
+    Arr (dynarr_of_list !out));
+  add "sum" (fun a ->
+    let r = require_arr "sum" (nth_val a 0) in
+    let total = ref 0.0 in
+    dynarr_iter (fun v -> total := !total +. to_num v) r;
+    Num !total);
+  add "min" (fun a ->
+    let r = require_arr "min" (nth_val a 0) in
+    if r.len = 0 then Nil
+    else begin
+      let m = ref (to_num (match dynarr_get r 0 with Some v -> v | None -> Nil)) in
+      dynarr_iter (fun v -> let n = to_num v in if n < !m then m := n) r;
+      Num !m
+    end);
+  add "max" (fun a ->
+    let r = require_arr "max" (nth_val a 0) in
+    if r.len = 0 then Nil
+    else begin
+      let m = ref (to_num (match dynarr_get r 0 with Some v -> v | None -> Nil)) in
+      dynarr_iter (fun v -> let n = to_num v in if n > !m then m := n) r;
+      Num !m
+    end);
+
+  (* Functional *)
+  add "map" (fun a ->
+    let r = require_arr "map" (nth_val a 0) in
+    let _ = require_lambda "map" (nth_val a 1) in
+    let fn = nth_val a 1 in
+    Arr (dynarr_of_list (List.map (fun v -> invoke_lambda fn [v]) (dynarr_to_list r))));
+  add "filter" (fun a ->
+    let r = require_arr "filter" (nth_val a 0) in
+    let _ = require_lambda "filter" (nth_val a 1) in
+    let fn = nth_val a 1 in
+    Arr (dynarr_of_list (List.filter (fun v -> is_truthy (invoke_lambda fn [v])) (dynarr_to_list r))));
+  add "reject" (fun a ->
+    let r = require_arr "reject" (nth_val a 0) in
+    let _ = require_lambda "reject" (nth_val a 1) in
+    let fn = nth_val a 1 in
+    Arr (dynarr_of_list (List.filter (fun v -> not (is_truthy (invoke_lambda fn [v]))) (dynarr_to_list r))));
+  add "reduce" (fun a ->
+    let r = require_arr "reduce" (nth_val a 0) in
+    let init = nth_val a 1 in
+    let _ = require_lambda "reduce" (nth_val a 2) in
+    let fn = nth_val a 2 in
+    List.fold_left (fun acc v -> invoke_lambda fn [acc; v]) init (dynarr_to_list r));
+  add "find" (fun a ->
+    let r = require_arr "find" (nth_val a 0) in
+    let _ = require_lambda "find" (nth_val a 1) in
+    let fn = nth_val a 1 in
+    let rec search = function
+      | [] -> Nil
+      | v :: rest -> if is_truthy (invoke_lambda fn [v]) then v else search rest
+    in
+    search (dynarr_to_list r));
+  add "any" (fun a ->
+    let r = require_arr "any" (nth_val a 0) in
+    let _ = require_lambda "any" (nth_val a 1) in
+    let fn = nth_val a 1 in
+    let rec check = function
+      | [] -> Num 0.0
+      | v :: rest -> if is_truthy (invoke_lambda fn [v]) then Num 1.0 else check rest
+    in
+    check (dynarr_to_list r));
+  add "all" (fun a ->
+    let r = require_arr "all" (nth_val a 0) in
+    let _ = require_lambda "all" (nth_val a 1) in
+    let fn = nth_val a 1 in
+    let rec check = function
+      | [] -> Num 1.0
+      | v :: rest -> if is_truthy (invoke_lambda fn [v]) then check rest else Num 0.0
+    in
+    check (dynarr_to_list r));
+  add "none" (fun a ->
+    let r = require_arr "none" (nth_val a 0) in
+    let _ = require_lambda "none" (nth_val a 1) in
+    let fn = nth_val a 1 in
+    let rec check = function
+      | [] -> Num 1.0
+      | v :: rest -> if is_truthy (invoke_lambda fn [v]) then Num 0.0 else check rest
+    in
+    check (dynarr_to_list r));
+  add "count" (fun a ->
+    let r = require_arr "count" (nth_val a 0) in
+    let _ = require_lambda "count" (nth_val a 1) in
+    let fn = nth_val a 1 in
+    let n = ref 0 in
+    dynarr_iter (fun v -> if is_truthy (invoke_lambda fn [v]) then incr n) r;
+    Num (float_of_int !n));
+  add "each" (fun a ->
+    let r = require_arr "each" (nth_val a 0) in
+    let _ = require_lambda "each" (nth_val a 1) in
+    let fn = nth_val a 1 in
+    dynarr_iter (fun v -> ignore (invoke_lambda fn [v])) r;
+    Arr r);
+  add "flat-map" (fun a ->
+    let r = require_arr "flat-map" (nth_val a 0) in
+    let _ = require_lambda "flat-map" (nth_val a 1) in
+    let fn = nth_val a 1 in
+    let out = ref [] in
+    dynarr_iter (fun v ->
+      match invoke_lambda fn [v] with
+      | Arr inner -> dynarr_iter (fun x -> out := x :: !out) inner
+      | other -> out := other :: !out
+    ) r;
+    Arr (dynarr_of_list (List.rev !out)));
+  add "sort-by" (fun a ->
+    let r = require_arr "sort-by" (nth_val a 0) in
+    let _ = require_lambda "sort-by" (nth_val a 1) in
+    let fn = nth_val a 1 in
+    let lst = dynarr_to_list r in
+    let sorted = List.sort (fun a b ->
+      compare (to_str (invoke_lambda fn [a])) (to_str (invoke_lambda fn [b]))
+    ) lst in
+    Arr (dynarr_of_list sorted));
+  add "group-by" (fun a ->
+    let r = require_arr "group-by" (nth_val a 0) in
+    let _ = require_lambda "group-by" (nth_val a 1) in
+    let fn = nth_val a 1 in
+    let h = Hashtbl.create 16 in
+    dynarr_iter (fun v ->
+      let key = to_str (invoke_lambda fn [v]) in
+      let lst = match hashtbl_find_opt h key with
+        | Some (Arr r) -> r
+        | _ -> let r = dynarr_empty () in Hashtbl.replace h key (Arr r); r
+      in
+      dynarr_push lst v
+    ) r;
+    Dict h);
+  add "uniq-by" (fun a ->
+    let r = require_arr "uniq-by" (nth_val a 0) in
+    let _ = require_lambda "uniq-by" (nth_val a 1) in
+    let fn = nth_val a 1 in
+    let seen = Hashtbl.create 16 in
+    let out = List.filter (fun v ->
+      let key = to_str (invoke_lambda fn [v]) in
+      if Hashtbl.mem seen key then false
+      else (Hashtbl.replace seen key true; true)
+    ) (dynarr_to_list r) in
+    Arr (dynarr_of_list out));
+  add "apply" (fun a ->
+    let _ = require_lambda "apply" (nth_val a 0) in
+    let fn = nth_val a 0 in
+    let args = match a with _ :: tl -> tl | [] -> [] in
+    invoke_lambda fn args);
 
   (* File I/O *)
   add "save" (fun a ->
@@ -2491,6 +2797,45 @@ let register_builtins () =
             then String.sub s 0 (String.length s - 1) else s in
     Str s);
 
+  (* Process *)
+  add "sleep" (fun a ->
+    let s = nth_num a 0 in
+    let s = if s < 0.0 then 0.0 else s in
+    Unix.sleepf s;
+    Num 0.0);
+  add "kill" (fun a ->
+    let signal = int_of_float (nth_num a 0) in
+    let pid = int_of_float (nth_num a 1) in
+    Unix.kill pid signal;
+    Num 0.0);
+  add "wait" (fun a ->
+    let pid = int_of_float (nth_num a 0) in
+    let pid = if pid = 0 then -1 else pid in
+    let (res_pid, status) = Unix.waitpid [] pid in
+    let code = status_to_code status in
+    let sig_n = match status with Unix.WSIGNALED n -> n | _ -> 0 in
+    let h = Hashtbl.create 4 in
+    Hashtbl.replace h "pid" (Num (float_of_int res_pid));
+    Hashtbl.replace h "status" (Num (float_of_int code));
+    Hashtbl.replace h "code" (Num (float_of_int code));
+    Hashtbl.replace h "signal" (Num (float_of_int sig_n));
+    Dict h);
+  add "times" (fun _ ->
+    let t = Unix.times () in
+    Arr (dynarr_of_list [
+      Num t.Unix.tms_utime; Num t.Unix.tms_stime;
+      Num t.Unix.tms_cutime; Num t.Unix.tms_cstime]));
+  add "umask" (fun a ->
+    let v = nth_val a 0 in
+    match v with
+    | Nil ->
+      let prev = Unix.umask 0 in
+      ignore (Unix.umask prev);
+      Num (float_of_int prev)
+    | _ ->
+      let mode = int_of_float (to_num v) in
+      Num (float_of_int (Unix.umask mode)));
+
   let alias new_name old_name =
     Hashtbl.replace builtins new_name (Hashtbl.find builtins old_name)
   in
@@ -2533,7 +2878,10 @@ let register_builtins () =
   alias "sys->call" "sys";
   alias "date->today" "date";
   alias "time->now" "time";
-  alias "time->iso-utc" "time-iso"
+  alias "time->iso-utc" "time-iso";
+  alias "pwd" "cwd";
+  alias "cd" "chdir";
+  alias "read" "user-input"
 
 (* ============================================================
    Main
