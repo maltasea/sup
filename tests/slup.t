@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
-use Test::More tests => 54;
+use Test::More tests => 56;
 use File::Temp qw(tempfile tempdir);
 use FindBin qw($Bin);
 use File::Spec;
@@ -50,6 +50,22 @@ print(bump(9))
 SLUP
     is($status, 0, 'def/let/defn aliases execute');
     is($out, "6\n10\n", 'def/let/defn aliases output');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+set @xs = [1, 2, 3, 4]
+set @ys = map(@xs, fn($x -> add($x, 1)))
+set @zs = map(@xs, {$x -> add($x, 10)})
+set @big = filter(@ys, fn($x -> gt($x, 2)))
+set @small = grep(@ys, fn($x -> lt($x, 4)))
+print(get(@ys, 0))
+print(get(@zs, 3))
+print(len(@big))
+print(len(@small))
+SLUP
+    is($status, 0, 'fn/lambda with map/filter/grep executes');
+    is($out, "2\n14\n3\n2\n", 'fn/lambda map/filter/grep output');
 }
 
 {

@@ -122,6 +122,26 @@ my %builtins = (
         die "len: argument must be an array\n" unless ref $arr eq 'ARRAY';
         return scalar @$arr;
     },
+    'map'    => sub {
+        my ($arr, $fn) = @_;
+        die "map: first argument must be an array\n" unless ref $arr eq 'ARRAY';
+        die "map: second argument must be fn(...)\n" unless is_slup_lambda($fn);
+        my @out;
+        for my $v (@$arr) {
+            push @out, invoke_lambda($fn, $v);
+        }
+        return \@out;
+    },
+    'filter' => sub {
+        my ($arr, $fn) = @_;
+        die "filter: first argument must be an array\n" unless ref $arr eq 'ARRAY';
+        die "filter: second argument must be fn(...)\n" unless is_slup_lambda($fn);
+        my @out;
+        for my $v (@$arr) {
+            push @out, $v if is_truthy_value(invoke_lambda($fn, $v));
+        }
+        return \@out;
+    },
     'save'   => sub {
         my ($path, $content) = @_;
         die "save: missing filename\n" unless defined $path && $path ne '';
@@ -460,6 +480,7 @@ $builtins{'array->len'}  = $builtins{'len'};
 $builtins{'array->get'}  = $builtins{'get'};
 $builtins{'array->push'} = $builtins{'push'};
 $builtins{'array->pop'}  = $builtins{'pop'};
+$builtins{'grep'}        = $builtins{'filter'};
 
 $builtins{'dict->get'}   = $builtins{'dict-get'};
 $builtins{'dict->set'}   = $builtins{'dict-set'};
@@ -1555,6 +1576,129 @@ sub split_dict_pair {
     return;
 }
 
+sub is_truthy_value {
+    my ($value) = @_;
+    return ($value && $value ne '0' && $value ne '') ? 1 : 0;
+}
+
+sub find_top_level_arrow {
+    my ($raw) = @_;
+    my $depth = 0;
+    my $in_quote = 0;
+    my $escaped = 0;
+    my $len = length $raw;
+
+    for (my $i = 0; $i < $len - 1; $i++) {
+        my $ch = substr($raw, $i, 1);
+        if ($in_quote && $escaped) {
+            $escaped = 0;
+            next;
+        }
+        if ($in_quote && $ch eq '\\') {
+            $escaped = 1;
+            next;
+        }
+        if ($ch eq '"') {
+            $in_quote = !$in_quote;
+            next;
+        }
+        next if $in_quote;
+
+        if ($ch eq '(' || $ch eq '[' || $ch eq '{') {
+            $depth++;
+            next;
+        }
+        if ($ch eq ')' || $ch eq ']' || $ch eq '}') {
+            $depth--;
+            next;
+        }
+        if ($depth == 0 && $ch eq '-' && substr($raw, $i + 1, 1) eq '>') {
+            return $i;
+        }
+    }
+    return;
+}
+
+sub parse_lambda_expr {
+    my ($raw, $label) = @_;
+    $label //= 'fn';
+    $raw //= '';
+    $raw =~ s/^\s+//;
+    $raw =~ s/\s+$//;
+
+    my $arrow = find_top_level_arrow($raw);
+    die "$label: missing ->\n" unless defined $arrow;
+
+    my $params_raw = substr($raw, 0, $arrow);
+    my $body_raw = substr($raw, $arrow + 2);
+    $params_raw =~ s/^\s+//;
+    $params_raw =~ s/\s+$//;
+    $body_raw =~ s/^\s+//;
+    $body_raw =~ s/\s+$//;
+
+    die "$label: expected at least one parameter\n" if $params_raw eq '';
+    die "$label: missing body expression\n" if $body_raw eq '';
+
+    my @params;
+    for my $part (split /,/, $params_raw) {
+        $part =~ s/^\s+//;
+        $part =~ s/\s+$//;
+        die "$label: bad parameter '$part'\n"
+            unless $part =~ /^\$($SYMBOL_NAME_RE)$/;
+        my $name = $1;
+        die "$label: parameter '\$$name' must be lowercase\n"
+            unless is_local_name($name);
+        push @params, $name;
+    }
+    die "$label: expected at least one parameter\n" unless @params;
+
+    return {
+        __slup_lambda => 1,
+        module => $current_module,
+        params => \@params,
+        body => $body_raw,
+    };
+}
+
+sub maybe_parse_lambda_expr {
+    my ($raw, $label) = @_;
+    my $trimmed = $raw // '';
+    $trimmed =~ s/^\s+//;
+    $trimmed =~ s/\s+$//;
+    return unless $trimmed =~ /^\$/;
+    return unless defined find_top_level_arrow($trimmed);
+    return parse_lambda_expr($trimmed, $label);
+}
+
+sub is_slup_lambda {
+    my ($value) = @_;
+    return ref($value) eq 'HASH' && $value->{__slup_lambda};
+}
+
+sub invoke_lambda {
+    my ($fn, @args) = @_;
+    die "lambda: expected fn(...)\n" unless is_slup_lambda($fn);
+
+    my $target_module = $fn->{module} // $current_module;
+    my $frames = module_var_frames_ref($target_module);
+    push @$frames, {};
+    my $frame = $frames->[-1];
+
+    my $ret;
+    my $ok = eval {
+        local $current_module = $target_module;
+        for my $idx (0 .. $#{$fn->{params}}) {
+            $frame->{$fn->{params}[$idx]} = $args[$idx];
+        }
+        $ret = eval_expr($fn->{body});
+        1;
+    };
+    my $err = $@;
+    pop @$frames;
+    die $err unless $ok;
+    return $ret;
+}
+
 # Evaluate a single expression (recursive for function calls)
 sub eval_expr {
     my ($expr) = @_;
@@ -1648,6 +1792,8 @@ sub eval_expr {
     # Dict literal: {key: val, key2: val2}
     if ($expr =~ /^\{(.*)\}$/) {
         my $inner = $1;
+        my $lambda = maybe_parse_lambda_expr($inner, 'lambda');
+        return $lambda if defined $lambda;
         my %h;
         for my $pair (parse_arglist($inner)) {
             $pair =~ s/^\s+//; $pair =~ s/\s+$//;
@@ -1676,6 +1822,9 @@ sub eval_expr {
     if ($expr =~ /^($SYMBOL_NAME_RE(?:\/$SYMBOL_NAME_RE)?)\s*\((.*)?\)\s*$/) {
         my $fname = $1;
         my $raw_args = $2 // '';
+        if ($fname eq 'fn') {
+            return parse_lambda_expr($raw_args, 'fn');
+        }
         my @args = parse_arglist($raw_args);
         my @evaled = map { eval_expr($_) } @args;
 

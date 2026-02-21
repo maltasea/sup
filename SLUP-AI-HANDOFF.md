@@ -19,7 +19,7 @@ Both interpreters should accept the same language. When adding features, impleme
   - `defn` parsed alongside `sub`
 - In progress:
   - full `def`/`let` immutability semantics
-  - `fn(...)` parity in Perl runtime (currently OCaml-only)
+  - enforce immutability rules in runtime semantics (`def`/`let` immutable, `set` mutable)
 
 ## Architecture (OCaml — `slup.ml`)
 

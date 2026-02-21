@@ -43,7 +43,7 @@ Supported expression forms:
 - dict literal: `{k: "v", "api-key": 1, $dyn_key: 2}`
 - function call: `add(1, 2)`
 - regex literal: `#"^abc"`
-- anonymous function (OCaml runtime): `{$x -> expr}` or `fn($x -> expr)`
+- anonymous function: `{$x -> expr}` or `fn($x -> expr)`
 
 ## Statements
 
@@ -147,4 +147,4 @@ end
 - Unknown function call is an error.
 - In strict globals mode, undeclared global reads/writes are errors.
 - Builtins include text/array/dict/file/path/date/time/system helpers and process helpers (`run`, `pipe`, `sh`).
-- Runtime parity note: `fn(...)` is currently OCaml-only; Perl parity is pending.
+- Runtime note: `fn(...)` and `{$x -> ...}` lambda forms are available in both runtimes.

@@ -24,7 +24,7 @@ Target syntax direction:
 
 Status note:
 - `def`, `let`, and `defn` are now accepted syntax aliases in both runtimes.
-- `fn(...)` is currently implemented in OCaml; Perl runtime parity is still pending.
+- `fn(...)` is implemented in both runtimes.
 - Full immutability semantics migration is still in progress.
 
 ## Globals vs Locals
