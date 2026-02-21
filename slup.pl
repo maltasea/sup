@@ -32,8 +32,13 @@ my @module_load_stack;
 my %module_source_paths;
 my $MODULE_NAME_RE = qr/[A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)*/;
 my $SYMBOL_NAME_RE = qr/[A-Za-z_][A-Za-z0-9_]*(?:(?:->|-|\?)[A-Za-z0-9_]+)*\??/;
+my $LIGHT_IDENT_RE = qr/[A-Za-z_][A-Za-z0-9_]*/;
 our $call_depth = 0;
 our $returning = 0;
+our $breaking = 0;
+our $continuing = 0;
+our $loop_depth = 0;
+our $light_fun_block_seq = 0;
 our $active_line_no;
 our @call_stack;
 our %active_calls;
@@ -48,14 +53,21 @@ my %builtins = (
     'add' => sub { return ($_[0] // 0) + ($_[1] // 0) },
     'sub' => sub { return ($_[0] // 0) - ($_[1] // 0) },
     'mul' => sub { return ($_[0] // 0) * ($_[1] // 0) },
+    'div' => sub { return ($_[0] // 0) / ($_[1] // 1) },
+    'mod' => sub { return ($_[0] // 0) % ($_[1] // 1) },
     'concat' => sub { return ($_[0] // '') . ($_[1] // '') },
     'length' => sub { return length($_[0] // '') },
     'upper'  => sub { return uc($_[0] // '') },
     'lower'  => sub { return lc($_[0] // '') },
     'not'    => sub { return $_[0] ? 0 : 1 },
     'eq'     => sub { return ($_[0] // '') eq ($_[1] // '') ? 1 : 0 },
+    'neq'    => sub { return ($_[0] // '') ne ($_[1] // '') ? 1 : 0 },
     'gt'     => sub { return ($_[0] // 0) >  ($_[1] // 0) ? 1 : 0 },
     'lt'     => sub { return ($_[0] // 0) <  ($_[1] // 0) ? 1 : 0 },
+    'gte'    => sub { return ($_[0] // 0) >= ($_[1] // 0) ? 1 : 0 },
+    'lte'    => sub { return ($_[0] // 0) <= ($_[1] // 0) ? 1 : 0 },
+    'and'    => sub { return (is_truthy_value($_[0]) && is_truthy_value($_[1])) ? 1 : 0 },
+    'or'     => sub { return (is_truthy_value($_[0]) || is_truthy_value($_[1])) ? 1 : 0 },
     'extract' => sub {
         my ($str, $pat) = @_;
         $str //= '';
@@ -68,6 +80,32 @@ my %builtins = (
         $str //= '';
         die "matchrx: second argument must be a regex #\"...\"\n" unless defined $pat;
         return ($str =~ $pat) ? 1 : 0;
+    },
+    'rx-sub' => sub {
+        my ($text, $pattern, $replacement, $flags) = @_;
+        $text = '' unless defined $text;
+        $replacement = '' unless defined $replacement;
+        $flags //= '';
+        my $re;
+        if (ref($pattern) eq 'Regexp') {
+            $re = $pattern;
+        } else {
+            my $pat = defined($pattern) ? "$pattern" : '';
+            my $mods = '';
+            $mods .= 'i' if $flags =~ /i/;
+            $mods .= 'm' if $flags =~ /m/;
+            $mods .= 's' if $flags =~ /s/;
+            my $qr_pat = $mods ne '' ? "(?$mods:$pat)" : $pat;
+            $re = eval { qr/$qr_pat/ };
+            die "rx-sub: invalid regex pattern\n" if $@;
+        }
+        my $out = "$text";
+        if ($flags =~ /g/) {
+            $out =~ s/$re/$replacement/g;
+        } else {
+            $out =~ s/$re/$replacement/;
+        }
+        return $out;
     },
     'array'  => sub { return [@_] },
     'dict'   => sub {
@@ -113,9 +151,37 @@ my %builtins = (
         return pop @$arr;
     },
     'get'    => sub {
-        my ($arr, $idx) = @_;
-        die "get: first argument must be an array\n" unless ref $arr eq 'ARRAY';
-        return $arr->[$idx // 0];
+        my ($target, $idx) = @_;
+        if (ref $target eq 'ARRAY') {
+            return $target->[$idx // 0];
+        }
+        if (ref $target eq 'HASH') {
+            return $target->{$idx};
+        }
+        die "get: first argument must be an array\n";
+    },
+    'set-index' => sub {
+        my ($target, $idx, $val) = @_;
+        if (ref $target eq 'ARRAY') {
+            $target->[$idx // 0] = $val;
+            return $val;
+        }
+        if (ref $target eq 'HASH') {
+            $target->{$idx} = $val;
+            return $val;
+        }
+        die "set-index: first argument must be an array or dict\n";
+    },
+    'make-fun-ref' => sub {
+        my ($name) = @_;
+        die "make-fun-ref: missing function name\n" unless defined $name && $name ne '';
+        my $subs = module_subs_ref($current_module);
+        die "make-fun-ref: unknown function '$name'\n" unless exists $subs->{$name};
+        return {
+            __slup_lambda => 1,
+            module => $current_module,
+            subref => $name,
+        };
     },
     'len'    => sub {
         my ($arr) = @_;
@@ -1679,6 +1745,46 @@ sub invoke_lambda {
     my ($fn, @args) = @_;
     die "lambda: expected fun(...)\n" unless is_slup_lambda($fn);
 
+    if (exists $fn->{subref}) {
+        my $target_module = $fn->{module} // $current_module;
+        my $sub_name = $fn->{subref};
+        my $sub = module_subs_ref($target_module)->{$sub_name};
+        die "lambda: unknown function '$sub_name'\n" unless $sub;
+
+        my $call_id = "$target_module/$sub_name";
+        if ($active_calls{$call_id}) {
+            die with_line_context("recursion is not allowed for function '$sub_name'; declare it with rec")
+                unless $sub->{recursive};
+        }
+
+        my $frames = module_var_frames_ref($target_module);
+        push @$frames, {};
+        push @call_stack, $call_id;
+        $active_calls{$call_id}++;
+        my $frame = $frames->[-1];
+        my $ret;
+        my $ok = eval {
+            local $call_depth = $call_depth + 1;
+            local $returning = 0;
+            local $current_module = $target_module;
+            for my $idx (0 .. $#{$sub->{params}}) {
+                $frame->{$sub->{params}[$idx]} = $args[$idx];
+            }
+            delete $frame->{'_return'};
+            my $body = $sub->{body_nodes} // $sub->{body} // [];
+            run_lines($body);
+            $ret = $frame->{'_return'};
+            1;
+        };
+        my $err = $@;
+        pop @call_stack;
+        $active_calls{$call_id}--;
+        delete $active_calls{$call_id} unless $active_calls{$call_id};
+        pop @$frames;
+        die $err unless $ok;
+        return $ret;
+    }
+
     my $target_module = $fn->{module} // $current_module;
     my $frames = module_var_frames_ref($target_module);
     push @$frames, {};
@@ -1699,10 +1805,682 @@ sub invoke_lambda {
     return $ret;
 }
 
+sub light_escape_string {
+    my ($raw) = @_;
+    $raw = '' unless defined $raw;
+    $raw =~ s/\\/\\\\/g;
+    $raw =~ s/"/\\"/g;
+    $raw =~ s/\n/\\n/g;
+    $raw =~ s/\r/\\r/g;
+    $raw =~ s/\t/\\t/g;
+    return "\"$raw\"";
+}
+
+sub light_regex_literal_to_slup {
+    my ($pat, $flags) = @_;
+    $pat //= '';
+    $flags //= '';
+    my $mods = '';
+    $mods .= 'i' if $flags =~ /i/;
+    $mods .= 'm' if $flags =~ /m/;
+    $mods .= 's' if $flags =~ /s/;
+    my $full = $mods ne '' ? "(?$mods:$pat)" : $pat;
+    $full =~ s/\\/\\\\/g;
+    $full =~ s/"/\\"/g;
+    return '#"' . $full . '"';
+}
+
+sub light_tokenize_expr {
+    my ($expr) = @_;
+    my @tokens;
+    my $i = 0;
+    my $len = length $expr;
+
+    while ($i < $len) {
+        if (substr($expr, $i) =~ /\A\s+/) {
+            $i += length($&);
+            next;
+        }
+
+        my $prev = @tokens ? ($tokens[-1]{value} // $tokens[-1]{type}) : '';
+        my $rest = substr($expr, $i);
+
+        if ($prev eq '=~' && $rest =~ /\As\/((?:\\.|[^\/])*)\/((?:\\.|[^\/])*)\/([A-Za-z]*)/) {
+            my ($pat, $rep, $flags) = ($1, $2, $3);
+            push @tokens, { type => 'subst', pat => $pat, rep => $rep, flags => $flags };
+            $i += length($&);
+            next;
+        }
+
+        if (($prev eq '=~' || $prev eq '!~') && $rest =~ /\A\/((?:\\.|[^\/])*)\/([A-Za-z]*)/) {
+            my ($pat, $flags) = ($1, $2);
+            push @tokens, { type => 'regex', pat => $pat, flags => $flags };
+            $i += length($&);
+            next;
+        }
+
+        if ($rest =~ /\A"((?:\\.|[^"\\])*)"/) {
+            push @tokens, { type => 'str', value => $1 };
+            $i += length($&);
+            next;
+        }
+
+        if ($rest =~ /\A(\d+(?:\.\d+)?)/) {
+            push @tokens, { type => 'num', value => $1 };
+            $i += length($&);
+            next;
+        }
+
+        if ($rest =~ /\A([A-Za-z_][A-Za-z0-9_]*)/) {
+            my $word = $1;
+            my $next = substr($expr, $i + length($word), 1);
+            if ($next eq ':') {
+                push @tokens, { type => 'kwlit', value => $word };
+                $i += length($word) + 1;
+                next;
+            }
+            if ($word eq 'and' || $word eq 'or' || $word eq 'not') {
+                push @tokens, { type => 'op', value => $word };
+            } elsif ($word eq 'true' || $word eq 'false') {
+                push @tokens, { type => 'bool', value => $word };
+            } elsif ($word eq 'nil') {
+                push @tokens, { type => 'nil', value => 'nil' };
+            } else {
+                push @tokens, { type => 'ident', value => $word };
+            }
+            $i += length($word);
+            next;
+        }
+
+        if ($rest =~ /\A(==|!=|<=|>=|=~|!~|\+\+)/) {
+            push @tokens, { type => 'op', value => $1 };
+            $i += length($1);
+            next;
+        }
+
+        if ($rest =~ /\A([\+\-\*\/%<>])/) {
+            push @tokens, { type => 'op', value => $1 };
+            $i += 1;
+            next;
+        }
+
+        if ($rest =~ /\A([()\[\]{},:])/) {
+            push @tokens, { type => 'punct', value => $1 };
+            $i += 1;
+            next;
+        }
+
+        die "Unsupported expression token near: " . substr($rest, 0, 20) . "\n";
+    }
+
+    push @tokens, { type => 'eof', value => 'eof' };
+    return \@tokens;
+}
+
+sub light_peek {
+    my ($tokens, $pos_ref) = @_;
+    return $tokens->[$$pos_ref];
+}
+
+sub light_next {
+    my ($tokens, $pos_ref) = @_;
+    my $tok = $tokens->[$$pos_ref];
+    $$pos_ref++;
+    return $tok;
+}
+
+sub light_parse_expr;
+sub light_parse_or;
+sub light_parse_and;
+sub light_parse_cmp;
+sub light_parse_add;
+sub light_parse_mul;
+sub light_parse_unary;
+sub light_parse_postfix;
+sub light_parse_primary;
+
+sub light_parse_expr {
+    my ($tokens, $pos_ref) = @_;
+    return light_parse_or($tokens, $pos_ref);
+}
+
+sub light_parse_or {
+    my ($tokens, $pos_ref) = @_;
+    my $node = light_parse_and($tokens, $pos_ref);
+    while (light_peek($tokens, $pos_ref)->{type} eq 'op'
+        && light_peek($tokens, $pos_ref)->{value} eq 'or') {
+        light_next($tokens, $pos_ref);
+        my $rhs = light_parse_and($tokens, $pos_ref);
+        $node = { type => 'bin', op => 'or', left => $node, right => $rhs };
+    }
+    return $node;
+}
+
+sub light_parse_and {
+    my ($tokens, $pos_ref) = @_;
+    my $node = light_parse_cmp($tokens, $pos_ref);
+    while (light_peek($tokens, $pos_ref)->{type} eq 'op'
+        && light_peek($tokens, $pos_ref)->{value} eq 'and') {
+        light_next($tokens, $pos_ref);
+        my $rhs = light_parse_cmp($tokens, $pos_ref);
+        $node = { type => 'bin', op => 'and', left => $node, right => $rhs };
+    }
+    return $node;
+}
+
+sub light_parse_cmp {
+    my ($tokens, $pos_ref) = @_;
+    my $node = light_parse_add($tokens, $pos_ref);
+    while (light_peek($tokens, $pos_ref)->{type} eq 'op'
+        && light_peek($tokens, $pos_ref)->{value} =~ /^(==|!=|<|>|<=|>=|=~|!~)$/) {
+        my $op = light_next($tokens, $pos_ref)->{value};
+        my $rhs = light_parse_add($tokens, $pos_ref);
+        $node = { type => 'bin', op => $op, left => $node, right => $rhs };
+    }
+    return $node;
+}
+
+sub light_parse_add {
+    my ($tokens, $pos_ref) = @_;
+    my $node = light_parse_mul($tokens, $pos_ref);
+    while (light_peek($tokens, $pos_ref)->{type} eq 'op'
+        && light_peek($tokens, $pos_ref)->{value} =~ /^(\+|-|\+\+)$/) {
+        my $op = light_next($tokens, $pos_ref)->{value};
+        my $rhs = light_parse_mul($tokens, $pos_ref);
+        $node = { type => 'bin', op => $op, left => $node, right => $rhs };
+    }
+    return $node;
+}
+
+sub light_parse_mul {
+    my ($tokens, $pos_ref) = @_;
+    my $node = light_parse_unary($tokens, $pos_ref);
+    while (light_peek($tokens, $pos_ref)->{type} eq 'op'
+        && light_peek($tokens, $pos_ref)->{value} =~ /^(\*|\/|%)$/) {
+        my $op = light_next($tokens, $pos_ref)->{value};
+        my $rhs = light_parse_unary($tokens, $pos_ref);
+        $node = { type => 'bin', op => $op, left => $node, right => $rhs };
+    }
+    return $node;
+}
+
+sub light_parse_unary {
+    my ($tokens, $pos_ref) = @_;
+    if (light_peek($tokens, $pos_ref)->{type} eq 'op'
+        && light_peek($tokens, $pos_ref)->{value} =~ /^(not|\+|-)$/) {
+        my $op = light_next($tokens, $pos_ref)->{value};
+        my $rhs = light_parse_unary($tokens, $pos_ref);
+        return { type => 'unary', op => $op, expr => $rhs };
+    }
+    return light_parse_postfix($tokens, $pos_ref);
+}
+
+sub light_parse_postfix {
+    my ($tokens, $pos_ref) = @_;
+    my $node = light_parse_primary($tokens, $pos_ref);
+
+    while (1) {
+        my $tok = light_peek($tokens, $pos_ref);
+        if ($tok->{type} eq 'punct' && $tok->{value} eq '(') {
+            light_next($tokens, $pos_ref);
+            my @args;
+            unless (light_peek($tokens, $pos_ref)->{type} eq 'punct'
+                && light_peek($tokens, $pos_ref)->{value} eq ')') {
+                while (1) {
+                    push @args, light_parse_expr($tokens, $pos_ref);
+                    last unless light_peek($tokens, $pos_ref)->{type} eq 'punct'
+                        && light_peek($tokens, $pos_ref)->{value} eq ',';
+                    light_next($tokens, $pos_ref);
+                }
+            }
+            my $close = light_next($tokens, $pos_ref);
+            die "expected ')' in call\n" unless $close->{type} eq 'punct' && $close->{value} eq ')';
+            $node = { type => 'call', callee => $node, args => \@args };
+            next;
+        }
+
+        if ($tok->{type} eq 'punct' && $tok->{value} eq '[') {
+            light_next($tokens, $pos_ref);
+            my $idx = light_parse_expr($tokens, $pos_ref);
+            my $close = light_next($tokens, $pos_ref);
+            die "expected ']' in index expression\n" unless $close->{type} eq 'punct' && $close->{value} eq ']';
+            $node = { type => 'index', base => $node, idx => $idx };
+            next;
+        }
+
+        last;
+    }
+
+    return $node;
+}
+
+sub light_parse_primary {
+    my ($tokens, $pos_ref) = @_;
+    my $tok = light_next($tokens, $pos_ref);
+    die "unexpected end of expression\n" if $tok->{type} eq 'eof';
+
+    return { type => 'num', value => $tok->{value} } if $tok->{type} eq 'num';
+    return { type => 'str', value => $tok->{value} } if $tok->{type} eq 'str';
+    return { type => 'bool', value => $tok->{value} } if $tok->{type} eq 'bool';
+    return { type => 'nil' } if $tok->{type} eq 'nil';
+    return { type => 'regex', pat => $tok->{pat}, flags => $tok->{flags} } if $tok->{type} eq 'regex';
+    return { type => 'subst', pat => $tok->{pat}, rep => $tok->{rep}, flags => $tok->{flags} } if $tok->{type} eq 'subst';
+    return { type => 'str', value => $tok->{value} } if $tok->{type} eq 'kwlit';
+    return { type => 'ident', value => $tok->{value} } if $tok->{type} eq 'ident';
+
+    if ($tok->{type} eq 'punct' && $tok->{value} eq '(') {
+        my $node = light_parse_expr($tokens, $pos_ref);
+        my $close = light_next($tokens, $pos_ref);
+        die "expected ')' in expression\n" unless $close->{type} eq 'punct' && $close->{value} eq ')';
+        return $node;
+    }
+
+    if ($tok->{type} eq 'punct' && $tok->{value} eq '[') {
+        my @items;
+        unless (light_peek($tokens, $pos_ref)->{type} eq 'punct'
+            && light_peek($tokens, $pos_ref)->{value} eq ']') {
+            while (1) {
+                push @items, light_parse_expr($tokens, $pos_ref);
+                last unless light_peek($tokens, $pos_ref)->{type} eq 'punct'
+                    && light_peek($tokens, $pos_ref)->{value} eq ',';
+                light_next($tokens, $pos_ref);
+            }
+        }
+        my $close = light_next($tokens, $pos_ref);
+        die "expected ']'\n" unless $close->{type} eq 'punct' && $close->{value} eq ']';
+        return { type => 'array', items => \@items };
+    }
+
+    if ($tok->{type} eq 'punct' && $tok->{value} eq '{') {
+        my @pairs;
+        unless (light_peek($tokens, $pos_ref)->{type} eq 'punct'
+            && light_peek($tokens, $pos_ref)->{value} eq '}') {
+            while (1) {
+                my $key;
+                if (light_peek($tokens, $pos_ref)->{type} eq 'kwlit') {
+                    $key = { type => 'str', value => light_next($tokens, $pos_ref)->{value} };
+                } else {
+                    $key = light_parse_expr($tokens, $pos_ref);
+                    my $colon = light_next($tokens, $pos_ref);
+                    die "expected ':' in dict literal\n"
+                        unless $colon->{type} eq 'punct' && $colon->{value} eq ':';
+                }
+                my $val = light_parse_expr($tokens, $pos_ref);
+                push @pairs, { key => $key, val => $val };
+                last unless light_peek($tokens, $pos_ref)->{type} eq 'punct'
+                    && light_peek($tokens, $pos_ref)->{value} eq ',';
+                light_next($tokens, $pos_ref);
+            }
+        }
+        my $close = light_next($tokens, $pos_ref);
+        die "expected '}'\n" unless $close->{type} eq 'punct' && $close->{value} eq '}';
+        return { type => 'dict', pairs => \@pairs };
+    }
+
+    die "unexpected token '$tok->{value}' in expression\n";
+}
+
+sub light_ast_to_slup {
+    my ($node, $as_callee) = @_;
+    $as_callee //= 0;
+    my $type = $node->{type};
+
+    if ($type eq 'num') {
+        return $node->{value};
+    }
+    if ($type eq 'str') {
+        return light_escape_string($node->{value});
+    }
+    if ($type eq 'bool') {
+        return $node->{value} eq 'true' ? '1' : '0';
+    }
+    if ($type eq 'nil') {
+        return 'nil';
+    }
+    if ($type eq 'ident') {
+        return $as_callee ? $node->{value} : '$' . $node->{value};
+    }
+    if ($type eq 'regex') {
+        return light_regex_literal_to_slup($node->{pat}, $node->{flags});
+    }
+    if ($type eq 'subst') {
+        die "substitution token can only be used with '=~'";
+    }
+    if ($type eq 'array') {
+        return '[' . join(', ', map { light_ast_to_slup($_, 0) } @{$node->{items}}) . ']';
+    }
+    if ($type eq 'dict') {
+        my @pairs;
+        for my $pair (@{$node->{pairs}}) {
+            my $k = light_ast_to_slup($pair->{key}, 0);
+            my $v = light_ast_to_slup($pair->{val}, 0);
+            push @pairs, "$k: $v";
+        }
+        return '{' . join(', ', @pairs) . '}';
+    }
+    if ($type eq 'call') {
+        my $callee = light_ast_to_slup($node->{callee}, 1);
+        die "call target must be an identifier\n" if $callee =~ /^\$/;
+        my @args = map { light_ast_to_slup($_, 0) } @{$node->{args}};
+        return "$callee(" . join(', ', @args) . ")";
+    }
+    if ($type eq 'index') {
+        return "get(" . light_ast_to_slup($node->{base}, 0) . ", " .
+            light_ast_to_slup($node->{idx}, 0) . ")";
+    }
+    if ($type eq 'unary') {
+        my $rhs = light_ast_to_slup($node->{expr}, 0);
+        return $rhs if $node->{op} eq '+';
+        return "sub(0, $rhs)" if $node->{op} eq '-';
+        return "not($rhs)" if $node->{op} eq 'not';
+    }
+    if ($type eq 'bin') {
+        my $lhs = light_ast_to_slup($node->{left}, 0);
+        my %map = (
+            '+' => 'add',
+            '-' => 'sub',
+            '*' => 'mul',
+            '/' => 'div',
+            '%' => 'mod',
+            '++' => 'concat',
+            '==' => 'eq',
+            '!=' => 'neq',
+            '<' => 'lt',
+            '>' => 'gt',
+            '<=' => 'lte',
+            '>=' => 'gte',
+            'and' => 'and',
+            'or' => 'or',
+        );
+        if ($node->{op} eq '=~') {
+            if ($node->{right}{type} eq 'subst') {
+                return "rx-sub($lhs, " . light_escape_string($node->{right}{pat}) . ", " .
+                    light_escape_string($node->{right}{rep}) . ", " .
+                    light_escape_string($node->{right}{flags}) . ")";
+            }
+            my $rhs = light_ast_to_slup($node->{right}, 0);
+            return "matchrx($lhs, $rhs)";
+        }
+        if ($node->{op} eq '!~') {
+            my $rhs = light_ast_to_slup($node->{right}, 0);
+            return "not(matchrx($lhs, $rhs))";
+        }
+        my $rhs = light_ast_to_slup($node->{right}, 0);
+        my $fn = $map{$node->{op}} // die "unsupported operator '$node->{op}'\n";
+        return "$fn($lhs, $rhs)";
+    }
+
+    die "unsupported light AST node '$type'\n";
+}
+
+sub maybe_normalize_light_expr {
+    my ($expr) = @_;
+    my $trim = $expr // '';
+    $trim =~ s/^\s+//;
+    $trim =~ s/\s+$//;
+    return $expr if $trim eq '';
+    return $expr if $trim =~ /^[\$\@\%#]/;
+    return $expr if $trim =~ /[\$\@\%]/;
+
+    my $tokens = eval { light_tokenize_expr($trim) };
+    return $expr if $@;
+    my $pos = 0;
+    my $ast = eval { light_parse_expr($tokens, \$pos) };
+    return $expr if $@;
+    return $expr unless light_peek($tokens, \$pos)->{type} eq 'eof';
+    my $out = eval { light_ast_to_slup($ast, 0) };
+    return $expr if $@;
+    return $out;
+}
+
+sub parse_light_param_list {
+    my ($raw_params, $label) = @_;
+    $raw_params //= '';
+    $label //= 'light form';
+    my @params = grep { $_ ne '' } map {
+        my $p = $_;
+        $p =~ s/^\s+//;
+        $p =~ s/\s+$//;
+        $p;
+    } split /,/, $raw_params;
+    for my $p (@params) {
+        die "Invalid parameter name '$p' in $label\n" unless $p =~ /^$LIGHT_IDENT_RE$/;
+    }
+    return @params;
+}
+
+sub collect_light_do_block {
+    my ($lines_ref, $start_idx, $label) = @_;
+    $label //= 'block';
+    my @body;
+    my $depth = 1;
+    my $i = $start_idx;
+
+    while ($i < scalar @$lines_ref) {
+        my $raw = $lines_ref->[$i];
+        my $line = $raw;
+        $line =~ s/^\s+//;
+        $line =~ s/\s+$//;
+
+        if ($line eq '' || $line =~ /^#/) {
+            push @body, $raw;
+            $i++;
+            next;
+        }
+
+        if ($line eq 'end') {
+            $depth--;
+            if ($depth == 0) {
+                $i++;
+                last;
+            }
+            push @body, $raw;
+            $i++;
+            next;
+        }
+
+        if ($line =~ /^if\b/
+            || $line =~ /^when\b/
+            || $line =~ /^unless\b/
+            || $line =~ /^while\b/
+            || $line =~ /^foreach\b/
+            || $line =~ /^switch\b/
+            || $line =~ /^fori\b/
+            || $line =~ /^(?:rec|defun)\b/
+            || $line =~ /\bfun\s*\[[^\]]*\]\s+do$/) {
+            $depth++;
+        }
+
+        push @body, $raw;
+        $i++;
+    }
+
+    die "$label without matching end\n" if $depth != 0;
+    return (\@body, $i);
+}
+
+sub normalize_light_program {
+    my ($lines_ref) = @_;
+    my @out;
+    my @stack;
+    my $tmp_id = 0;
+    my $i = 0;
+
+    while ($i < scalar @$lines_ref) {
+        my $raw = $lines_ref->[$i];
+        my $line = $raw;
+        $line =~ s/^\s+//;
+        $line =~ s/\s+$//;
+
+        if ($line eq '' || $line =~ /^#/) {
+            push @out, $raw;
+            $i++;
+            next;
+        }
+
+        if ($line =~ /^defun\s+($LIGHT_IDENT_RE)(?:\s*\[([^\]]*)\])?\s+do$/) {
+            my ($name, $raw_params) = ($1, $2 // '');
+            my @params = parse_light_param_list($raw_params, 'defun');
+            push @stack, { kind => 'defun' };
+            my $plist = join(', ', map { "\$$_" } @params);
+            push @out, "defun $name($plist)";
+            $i++;
+            next;
+        }
+
+        if ($line =~ /^if\s+(.+)\s+then$/) {
+            push @stack, { kind => 'if', elif_count => 0 };
+            push @out, 'if ' . maybe_normalize_light_expr($1);
+            $i++;
+            next;
+        }
+
+        if ($line =~ /^elif\s+(.+)\s+then$/ && @stack && $stack[-1]{kind} eq 'if') {
+            $stack[-1]{elif_count}++;
+            push @out, 'else';
+            push @out, 'if ' . maybe_normalize_light_expr($1);
+            $i++;
+            next;
+        }
+
+        if ($line =~ /^while\s+(.+)\s+do$/) {
+            push @stack, { kind => 'while' };
+            push @out, 'while ' . maybe_normalize_light_expr($1);
+            $i++;
+            next;
+        }
+
+        if ($line =~ /^foreach\s+($LIGHT_IDENT_RE)\s+in\s+(.+)\s+do$/) {
+            my ($var, $expr) = ($1, $2);
+            $tmp_id++;
+            my $tmp = "__foreach_$tmp_id";
+            push @out, "set \@$tmp = " . maybe_normalize_light_expr($expr);
+            push @out, "foreach \$$var \@$tmp";
+            push @stack, { kind => 'foreach' };
+            $i++;
+            next;
+        }
+
+        if ($line =~ /^(let|def)\s+($LIGHT_IDENT_RE)\s*=\s*fun\s*\[([^\]]*)\]\s+do$/) {
+            my ($kw, $var, $raw_params) = ($1, $2, $3 // '');
+            my @params = parse_light_param_list($raw_params, 'fun');
+            my ($body_raw, $next_i) = collect_light_do_block($lines_ref, $i + 1, 'fun');
+            my $body_norm = normalize_light_program($body_raw);
+            my $fun_name = '__fun_block_' . (++$light_fun_block_seq);
+            my $plist = join(', ', map { "\$$_" } @params);
+            push @out, "defun $fun_name($plist)";
+            push @out, @$body_norm;
+            push @out, 'end';
+            push @out, "$kw \$$var = make-fun-ref(" . light_escape_string($fun_name) . ")";
+            $i = $next_i;
+            next;
+        }
+
+        if ($line =~ /^($LIGHT_IDENT_RE)\s*=\s*fun\s*\[([^\]]*)\]\s+do$/) {
+            my ($var, $raw_params) = ($1, $2 // '');
+            my @params = parse_light_param_list($raw_params, 'fun');
+            my ($body_raw, $next_i) = collect_light_do_block($lines_ref, $i + 1, 'fun');
+            my $body_norm = normalize_light_program($body_raw);
+            my $fun_name = '__fun_block_' . (++$light_fun_block_seq);
+            my $plist = join(', ', map { "\$$_" } @params);
+            push @out, "defun $fun_name($plist)";
+            push @out, @$body_norm;
+            push @out, 'end';
+            push @out, "set \$$var = make-fun-ref(" . light_escape_string($fun_name) . ")";
+            $i = $next_i;
+            next;
+        }
+
+        if ($line eq 'end') {
+            if (@stack && $stack[-1]{kind} eq 'if') {
+                my $meta = pop @stack;
+                push @out, 'end';
+                push @out, ('end') x ($meta->{elif_count} // 0);
+                $i++;
+                next;
+            }
+            pop @stack if @stack;
+            push @out, 'end';
+            $i++;
+            next;
+        }
+
+        if ($line =~ /^return(?:\s+(.+))?$/) {
+            my $expr = defined($1) ? $1 : '';
+            if ($expr =~ /\S/) {
+                push @out, 'return(' . maybe_normalize_light_expr($expr) . ')';
+            } else {
+                push @out, 'return()';
+            }
+            $i++;
+            next;
+        }
+
+        if ($line eq 'break' || $line eq 'continue' || $line eq 'else') {
+            push @out, $line;
+            $i++;
+            next;
+        }
+
+        if ($line =~ /^(let|def)\s+($LIGHT_IDENT_RE)\s*=\s*(.+)$/) {
+            push @out, "$1 \$$2 = " . maybe_normalize_light_expr($3);
+            $i++;
+            next;
+        }
+
+        if ($line =~ /^($LIGHT_IDENT_RE)\s*\[\s*(.+)\s*\]\s*=\s*(.+)$/) {
+            my ($target, $idx, $value) = ($1, $2, $3);
+            push @out, 'set-index('
+                . maybe_normalize_light_expr($target) . ', '
+                . maybe_normalize_light_expr($idx) . ', '
+                . maybe_normalize_light_expr($value) . ')';
+            $i++;
+            next;
+        }
+
+        if ($line =~ /^($LIGHT_IDENT_RE)\s*=\s*(.+)$/) {
+            push @out, "set \$$1 = " . maybe_normalize_light_expr($2);
+            $i++;
+            next;
+        }
+
+        if ($line =~ /^($LIGHT_IDENT_RE)\s+(.+)$/) {
+            my ($head, $tail) = ($1, $2);
+            if ($head !~ /^(if|elif|else|while|foreach|def|let|defun|fun|return|break|continue|end|alias|global|when|unless|switch|case|fori|set|rec|sub|defn)$/) {
+                my $candidate = "$head($tail)";
+                if ($candidate !~ /[\$\@\%]/ && $candidate !~ /[A-Za-z_][A-Za-z0-9_]*-[A-Za-z0-9_]/ && $candidate !~ /[A-Za-z_][A-Za-z0-9_]*\/[A-Za-z_][A-Za-z0-9_]*\s*\(/ && $candidate !~ /\b(?:true|false)\s*\(/ && $candidate !~ /\\/) {
+                    push @out, maybe_normalize_light_expr($candidate);
+                    $i++;
+                    next;
+                }
+            }
+        }
+
+        if ($line =~ /^($LIGHT_IDENT_RE)\s*\((.*)\)$/) {
+            # Keep legacy calls untouched when they clearly use legacy-only forms.
+            # This limits light normalization to call statements that are safe to lower.
+            if ($line !~ /[\$\@\%]/ && $line !~ /[A-Za-z_][A-Za-z0-9_]*-[A-Za-z0-9_]/ && $line !~ /[A-Za-z_][A-Za-z0-9_]*\/[A-Za-z_][A-Za-z0-9_]*\s*\(/ && $line !~ /\b(?:true|false)\s*\(/ && $line !~ /\\/) {
+                push @out, maybe_normalize_light_expr($line);
+                $i++;
+                next;
+            }
+        }
+
+        push @out, $raw;
+        $i++;
+    }
+
+    return \@out;
+}
+
 # Evaluate a single expression (recursive for function calls)
 sub eval_expr {
     my ($expr) = @_;
     $expr =~ s/^\s+//; $expr =~ s/\s+$//;
+
+    if ($expr eq 'nil') {
+        return undef;
+    }
 
     # String literal (with $var interpolation)
     if ($expr =~ /^"((?:\\.|[^"\\])*)"$/) {
@@ -1877,10 +2655,18 @@ sub eval_expr {
             return $ret;
         }
 
-        die with_line_context("Unknown function: $fname") unless exists $builtins{$fname};
-        my $result = eval { $builtins{$fname}->(@evaled) };
-        return $result unless $@;
-        die with_line_context($@);
+        if (exists $builtins{$fname}) {
+            my $result = eval { $builtins{$fname}->(@evaled) };
+            return $result unless $@;
+            die with_line_context($@);
+        }
+
+        my ($found_fn, $fn_value) = local_var_lookup($current_module, $fname);
+        if ($found_fn && is_slup_lambda($fn_value)) {
+            return invoke_lambda($fn_value, @evaled);
+        }
+
+        die with_line_context("Unknown function: $fname");
     }
 
     die with_line_context("Cannot evaluate expression: '$expr'");
@@ -1932,7 +2718,8 @@ sub parse_arglist {
 
 sub compile_program {
     my ($lines_ref) = @_;
-    my ($nodes, $next, $term) = compile_block($lines_ref, 0, 0);
+    my $normalized = normalize_light_program($lines_ref);
+    my ($nodes, $next, $term) = compile_block($normalized, 0, 0);
     if (defined $term) {
         my $line = $next;
         die "else without matching if on line $line\n" if $term eq 'else';
@@ -2109,6 +2896,21 @@ sub compile_block {
             next;
         }
 
+        if ($line =~ /^while\s+(.+)$/) {
+            my $start_line = $i + 1;
+            my $cond = $1;
+            my ($body_nodes, $next_i, $term) = compile_block($lines_ref, $i + 1, 0);
+            die "while without matching end on line $start_line\n" unless defined $term && $term eq 'end';
+            push @nodes, {
+                kind => 'while',
+                line => $start_line,
+                cond => $cond,
+                body => $body_nodes,
+            };
+            $i = $next_i;
+            next;
+        }
+
         if ($line =~ /^(rec|defun)\s+($SYMBOL_NAME_RE)\s*\(([^)]*)\)$/) {
             my $start_line = $i + 1;
             my $kind = $1;
@@ -2164,6 +2966,24 @@ sub compile_block {
             next;
         }
 
+        if ($line eq 'break') {
+            push @nodes, {
+                kind => 'break',
+                line => $i + 1,
+            };
+            $i++;
+            next;
+        }
+
+        if ($line eq 'continue') {
+            push @nodes, {
+                kind => 'continue',
+                line => $i + 1,
+            };
+            $i++;
+            next;
+        }
+
         if ($line =~ /^$SYMBOL_NAME_RE(?:\/$SYMBOL_NAME_RE)?\s*\(/) {
             push @nodes, {
                 kind => 'call',
@@ -2184,7 +3004,7 @@ sub run_nodes {
     my ($nodes_ref) = @_;
     for my $node (@$nodes_ref) {
         exec_node($node);
-        last if $returning;
+        last if $returning || $breaking || $continuing;
     }
 }
 
@@ -2306,6 +3126,26 @@ sub exec_node {
         return;
     }
 
+    if ($kind eq 'while') {
+        local $loop_depth = $loop_depth + 1;
+        while (1) {
+            my $cond = eval_expr($node->{cond});
+            my $truthy = $cond && $cond ne '0' && $cond ne '';
+            last unless $truthy;
+            run_lines($node->{body});
+            last if $returning;
+            if ($breaking) {
+                $breaking = 0;
+                last;
+            }
+            if ($continuing) {
+                $continuing = 0;
+                next;
+            }
+        }
+        return;
+    }
+
     if ($kind eq 'sub_def') {
         module_subs_ref($current_module)->{$node->{name}} = {
             params => $node->{params},
@@ -2366,7 +3206,27 @@ sub exec_node {
             }
             run_lines($node->{body});
             last if $returning;
+            if ($breaking) {
+                $breaking = 0;
+                last;
+            }
+            if ($continuing) {
+                $continuing = 0;
+                next;
+            }
         }
+        return;
+    }
+
+    if ($kind eq 'break') {
+        die "break outside loop on line $line_no\n" if $loop_depth <= 0;
+        $breaking = 1;
+        return;
+    }
+
+    if ($kind eq 'continue') {
+        die "continue outside loop on line $line_no\n" if $loop_depth <= 0;
+        $continuing = 1;
         return;
     }
 
