@@ -1,0 +1,168 @@
+# PLEAC SLUP Conversion Problems Report
+
+Date: 2026-02-21
+
+## 1) Executive Summary
+
+This repo is now mostly converted, but the remaining gaps are concentrated in a few recurring failure modes.
+
+Current state:
+- Total sections (`perl.pl`): **307**
+- Real executable `slup.slup`: **250**
+- Remaining `slup-note.txt`: **57**
+- Coverage: **81.4% converted / 18.6% blocked**
+- `missing-perl-module` blockers intentionally ignored: **8**
+- `reference-required` sections intentionally ignored: **6**
+- Actionable blockers (after ignoring Perl deps + reference-required): **43**
+- Effective in-scope coverage: **85.3% converted / 14.7% blocked** (`250/293`, where `293 = 307 - 8 - 6`)
+
+The residual blockers are not random. Most are structural issues in source snippets (non-standalone Perl fragments), plus fixture/runtime gaps.
+
+Reference-required sections removed from scope:
+- `pleac/Chapter_11_References_and_Records/Section_11.4`
+- `pleac/Chapter_11_References_and_Records/Section_11.5`
+- `pleac/Chapter_11_References_and_Records/Section_11.6`
+- `pleac/Chapter_11_References_and_Records/Section_11.7`
+- `pleac/Chapter_11_References_and_Records/Section_11.8`
+- `pleac/Chapter_11_References_and_Records/Section_11.11`
+
+## 2) Top 10 Most Numerous / Significant Holes
+
+Ranking uses impact first (count of blocked sections), then difficulty/risk.
+
+| Rank | Hole / Difficulty | Count | Why it matters | Typical fix |
+|---|---|---:|---|---|
+| 1 | Non-standalone Perl snippet fragments | 24 | Largest remaining blocker; snippets are cookbook fragments, not runnable programs | Manual semantic SLUP port from `ocaml.ml`/intent |
+| 2 | Manual-port-required (mixed or unclear blockers) | 13 | Automation cannot infer stable behavior safely | Write minimal deterministic `slup.slup` by hand |
+| 3 | Missing input files/paths/runtime fixtures | 8 | Conversion run fails because expected files/devices are absent | Add fixtures or replace with deterministic in-repo sample behavior |
+| 4 | Bareword/operator parse fragments (subset of #1) | 8 | Most common parse symptom of non-standalone snippets | Treat as docs, not runnable Perl; port intent |
+| 5 | Syntax-error fragments (subset of #1) | 3 | Multi-line snippet fragments fail parser immediately | Manual SLUP equivalent |
+| 6 | Scalar-context fragment errors (subset of #1) | 3 | Implicit context missing outside cookbook scaffold | Rewrite explicitly in SLUP variables/expressions |
+| 7 | Array-context fragment errors (subset of #1) | 2 | Same structural issue, array/list context assumptions | Explicit SLUP arrays (`len/get/join`) |
+| 8 | Undefined helper subroutines in snippets (subset of #1) | 2 | Hidden dependencies omitted in snippet body | Stub/implement helper behavior in SLUP |
+| 9 | Singleton edge constraints (encoding/timeout/newline/env) | 4 total (1 each type) | Hard to bulk-fix; each requires custom handling | Per-case targeted fix |
+| 10 | Out-of-scope: missing Perl modules | 8 | Excluded by decision | Ignore during conversion prioritization |
+
+## 3) Problem Category Breakdown
+
+From `57` remaining `slup-note.txt` files (raw):
+
+- `non-standalone-perl-snippet`: **24**
+- `manual-port-required`: **13**
+- `missing-input-files-or-paths`: **8**
+- `missing-perl-module`: **8**
+- `unsupported-output-encoding`: **1**
+- `timeout-or-interactive-snippet`: **1**
+- `newline-mismatch`: **1**
+- `environment-permission-or-network`: **1**
+
+Interpretation:
+- **65% (37/57)** are semantic/manual-port work (non-standalone + manual-port-required).
+- **14% (8/57)** are Perl-module dependency blockers (**ignored by scope decision**).
+- **14% (8/57)** are missing fixture/input/path blockers.
+- **7% (4/57)** are special one-off runtime constraints.
+
+Actionable-only interpretation (excluding `missing-perl-module` + `reference-required`):
+- total actionable blockers: **43**
+- semantic/manual-port: **72.1% (31/43)**
+- missing fixture/input/path: **18.6% (8/43)**
+- singleton edge constraints: **9.3% (4/43)**
+
+## 4) Hotspot Chapters
+
+Remaining notes by chapter:
+
+- `Chapter_09_Directories`: 7
+- `Chapter_02_Numbers`: 7
+- `Chapter_20_Web_Automation`: 5
+- `Chapter_16_Process_Management`: 5
+- `Chapter_01_Strings`: 5
+- `Chapter_19_CGI_Programming`: 4
+- `Chapter_18_Internet_Services`: 4
+- `Chapter_06_Pattern_Matching`: 4
+- `Chapter_03_Dates_and_Times`: 4
+- `Chapter_12_Packages_Libraries_and_Modules`: 3
+- `Chapter_05_Hashes`: 1
+- `Metadata`: 1
+
+Why these chapters remain:
+- IO/network/process chapters require runtime resources/permissions or external programs.
+- reference/pattern chapters contain many fragment-style snippets.
+- numbers/date chapters have missing module dependencies.
+
+Scope note:
+- `Chapter_11_References_and_Records` is removed from actionable planning where reference semantics are required.
+
+## 5) Concrete Blocker Patterns (Representative)
+
+High-frequency raw blocker strings:
+- `exit code 255: Bareword found where operator expected` (7)
+- `exit code 255: syntax error` (3)
+- `exit code 255: Scalar found where operator expected` (3)
+- `exit code 255: Array found where operator expected` (2)
+
+Representative note examples:
+- Missing module: `pleac/Chapter_02_Numbers/Section_2.14/slup-note.txt`
+- Manual-port-required: `pleac/Chapter_16_Process_Management/Section_16.8/slup-note.txt`
+- Environment/network: `pleac/Chapter_18_Internet_Services/Section_18.2/slup-note.txt`
+- Encoding blocker: `pleac/Chapter_19_CGI_Programming/Section_19.1/slup-note.txt`
+
+## 6) Missing Perl Dependencies Still Seen (Out of Scope)
+
+From remaining notes:
+- `Math::TrulyRandom` (2)
+- `Date::Manip` (2)
+- `PDL` (1)
+- `String::Approx` (1)
+- `Net::Telnet` (1)
+- `File::KGlob` (1)
+
+Decision:
+- Per current scope, treat all `missing-perl-module` blockers as **ignored**.
+- Do not spend time installing/stabilizing Perl module dependencies for this effort.
+
+## 7) Why These Problems Are Hard
+
+1. Source quality mismatch:
+- PLEAC Perl files often contain explanatory fragments, not executable scripts.
+
+2. Runtime assumptions:
+- many recipes assume files, devices, daemons, network, or privileged operations.
+
+3. Converter scope limits:
+- auto converters work best on deterministic, runnable scripts with stable stdout.
+
+4. Semantic gaps:
+- some Perl idioms rely on context/reflection/dynamic behavior not directly represented in SLUP runtime.
+
+## 8) Recommended Resolution Plan
+
+Phase A (largest immediate yield):
+1. Convert remaining **non-standalone-perl-snippet (24)** by manual semantic SLUP ports.
+2. Convert **manual-port-required (13)** similarly.
+3. Skip sections that fundamentally require reference/coderef semantics.
+
+Phase B (environment/dependency):
+1. For missing-files/path sections (8), add deterministic fixtures or simplified in-repo inputs.
+2. Skip missing-module sections (8) as out-of-scope.
+
+Phase C (singletons):
+1. Timeout section: add bounded input/stub behavior.
+2. Newline mismatch: decide whether strict byte parity is required.
+3. Encoding/control chars: add binary-safe converter path.
+4. Permission/network case: mock side effects or keep deterministic textual demo.
+
+## 9) Immediate Next Targets
+
+Best next chapter order by impact + feasibility:
+1. `Chapter_09_Directories` (7)
+2. `Chapter_02_Numbers` (7)
+3. `Chapter_20_Web_Automation` (5)
+
+These three chapters alone account for **19 of 57** raw remaining notes.
+
+## 10) Related Tracking Files
+
+- `pleac/missing-slup-sections.txt`
+- `pleac/slup-coverage.txt`
+- `pleac/TOP_10_HOLES_REPORT.md`

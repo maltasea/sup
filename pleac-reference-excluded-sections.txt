@@ -1,0 +1,11 @@
+# Sections Excluded Due To Reference Requirement
+
+These sections are out of scope for SLUP parity because they rely on Perl reference/coderef
+semantics that SLUP does not support as a model feature.
+
+- pleac/Chapter_11_References_and_Records/Section_11.4
+- pleac/Chapter_11_References_and_Records/Section_11.5
+- pleac/Chapter_11_References_and_Records/Section_11.6
+- pleac/Chapter_11_References_and_Records/Section_11.7
+- pleac/Chapter_11_References_and_Records/Section_11.8
+- pleac/Chapter_11_References_and_Records/Section_11.11
