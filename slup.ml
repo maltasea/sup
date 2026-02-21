@@ -45,12 +45,13 @@ type node =
   | NSetDict of int * string * expr
   | NReturn of int * expr option
   | NIf of int * expr * node list * node list
-  | NSubDef of int * string * string list * node list
+  | NUnless of int * expr * node list * node list
+  | NSubDef of int * string * string list * node list * bool
   | NAlias of int * string * string
   | NForeach of int * string * string * node list
   | NCall of int * expr
 
-type sub_def = { params: string list; body: node list }
+type sub_def = { params: string list; body: node list; recursive: bool }
 
 (* ============================================================
    Helpers
@@ -100,7 +101,14 @@ let module_arrays : (string, (string, value) Hashtbl.t) Hashtbl.t = Hashtbl.crea
 let module_dicts : (string, (string, value) Hashtbl.t) Hashtbl.t = Hashtbl.create 16
 let module_subs : (string, (string, sub_def) Hashtbl.t) Hashtbl.t = Hashtbl.create 16
 let module_dirs : (string, string) Hashtbl.t = Hashtbl.create 16
+let loaded_module_paths : (string, bool) Hashtbl.t = Hashtbl.create 32
+let module_loading_paths : (string, bool) Hashtbl.t = Hashtbl.create 32
+let module_source_paths : (string, string) Hashtbl.t = Hashtbl.create 32
+let module_load_stack : string list ref = ref []
 let module_var_frames : (string, (string, value) Hashtbl.t list ref) Hashtbl.t = Hashtbl.create 16
+let call_stack : string list ref = ref []
+let active_calls : (string, int) Hashtbl.t = Hashtbl.create 64
+let active_line_no : int option ref = ref None
 
 let builtins : (string, value list -> value) Hashtbl.t = Hashtbl.create 64
 let global_decls : (string, global_decl) Hashtbl.t = Hashtbl.create 64
@@ -189,6 +197,17 @@ let list_filter_map f lst =
       | None -> aux acc xs
   in
   aux [] lst
+
+let starts_with s prefix =
+  let slen = String.length s in
+  let plen = String.length prefix in
+  slen >= plen && String.sub s 0 plen = prefix
+
+let with_line_context msg =
+  match !active_line_no with
+  | Some line when not (starts_with msg "line ") ->
+    Printf.sprintf "line %d: %s" line msg
+  | _ -> msg
 
 let is_relative_path path =
   let len = String.length path in
@@ -284,8 +303,10 @@ let re_global_set =
 let re_global_decl =
   Str.regexp {|^global[ 	]+\$\([^ 	]+\)\([ 	]+\(.*\)\)?[ 	]*$|}
 let re_if = Str.regexp {|^if[ 	]+\(.*\)$|}
+let re_when = Str.regexp {|^when[ 	]+\(.*\)$|}
+let re_unless = Str.regexp {|^unless[ 	]+\(.*\)$|}
 let re_sub_def =
-  Str.regexp {|^sub[ 	]+\([^ 	(]+\)[ 	]*(\([^)]*\))[ 	]*$|}
+  Str.regexp {|^\(rec\|sub\)[ 	]+\([^ 	(]+\)[ 	]*(\([^)]*\))[ 	]*$|}
 let re_alias =
   Str.regexp
     {|^alias[ 	]+\([^ 	=]+\)[ 	]*=[ 	]*\([^ 	]+\)[ 	]*$|}
@@ -557,6 +578,18 @@ let resolve_load_path file =
     | c :: rest -> if file_exists c then c else pick rest
   in
   pick (List.rev !candidates)
+
+let canonicalize_path path =
+  let abs =
+    if is_relative_path path then
+      Filename.concat (Sys.getcwd ()) path
+    else
+      path
+  in
+  try Unix.realpath abs with _ -> abs
+
+let format_load_cycle next_abs_path =
+  String.concat " -> " ((List.rev !module_load_stack) @ [next_abs_path])
 
 let resolve_sub_target fname =
   match split_qualified_func fname with
@@ -1073,11 +1106,48 @@ let rec compile_block lines start allow_else =
           | None ->
             failwith (Printf.sprintf "if without matching end on line %d" (i + 1))
         end
+      else if re_matches re_when line then
+        let cond = Str.matched_group 1 line in
+        let cexpr = compile_expr cond in
+        let true_body, next_i, term = compile_block lines (i + 1) true in
+        begin
+          match term with
+          | Some Block_end ->
+            loop next_i (NIf (i + 1, cexpr, true_body, []) :: acc)
+          | Some Block_else ->
+            let false_body, after_false, term2 = compile_block lines next_i false in
+            (match term2 with
+            | Some Block_end ->
+              loop after_false (NIf (i + 1, cexpr, true_body, false_body) :: acc)
+            | _ ->
+              failwith (Printf.sprintf "when without matching end on line %d" (i + 1)))
+          | None ->
+            failwith (Printf.sprintf "when without matching end on line %d" (i + 1))
+        end
+      else if re_matches re_unless line then
+        let cond = Str.matched_group 1 line in
+        let cexpr = compile_expr cond in
+        let true_body, next_i, term = compile_block lines (i + 1) true in
+        begin
+          match term with
+          | Some Block_end ->
+            loop next_i (NUnless (i + 1, cexpr, true_body, []) :: acc)
+          | Some Block_else ->
+            let false_body, after_false, term2 = compile_block lines next_i false in
+            (match term2 with
+            | Some Block_end ->
+              loop after_false (NUnless (i + 1, cexpr, true_body, false_body) :: acc)
+            | _ ->
+              failwith (Printf.sprintf "unless without matching end on line %d" (i + 1)))
+          | None ->
+            failwith (Printf.sprintf "unless without matching end on line %d" (i + 1))
+        end
       else if re_matches re_sub_def line then
-        let name = Str.matched_group 1 line in
+        let kind = Str.matched_group 1 line in
+        let name = Str.matched_group 2 line in
         if not (is_symbol_name name) then
           failwith (Printf.sprintf "Syntax error on line %d: %s" (i + 1) line);
-        let raw_params = Str.matched_group 2 line in
+        let raw_params = Str.matched_group 3 line in
         let params =
           list_filter_map (fun s ->
             let p = String.trim s in
@@ -1097,9 +1167,9 @@ let rec compile_block lines start allow_else =
         let body, next_i, term = compile_block lines (i + 1) false in
         (match term with
         | Some Block_end ->
-          loop next_i (NSubDef (i + 1, name, params, body) :: acc)
+          loop next_i (NSubDef (i + 1, name, params, body, kind = "rec") :: acc)
         | _ ->
-          failwith (Printf.sprintf "sub without matching end on line %d" (i + 1)))
+          failwith (Printf.sprintf "%s without matching end on line %d" kind (i + 1)))
       else if re_matches re_alias line then
         let new_name = Str.matched_group 1 line in
         let old_name = Str.matched_group 2 line in
@@ -1221,11 +1291,32 @@ let rec eval_expr = function
       match resolve_sub_target fname with
       | Some (target_module, sub_name) ->
         let sub = Hashtbl.find (module_subs_ref target_module) sub_name in
+        let call_id = target_module ^ "/" ^ sub_name in
+        let active_count =
+          match hashtbl_find_opt active_calls call_id with
+          | Some n -> n
+          | None -> 0
+        in
+        if active_count > 0 && not sub.recursive then
+          failwith (with_line_context ("recursion is not allowed for sub '" ^ sub_name ^ "'; declare it with rec"));
         let saved_depth = !call_depth in
         let saved_returning = !returning in
         let saved_module = !current_module in
         push_module_var_frame target_module;
+        call_stack := call_id :: !call_stack;
+        Hashtbl.replace active_calls call_id (active_count + 1);
         let restore () =
+          call_stack :=
+            (match !call_stack with
+            | _ :: tl -> tl
+            | [] -> []);
+          let count =
+            match hashtbl_find_opt active_calls call_id with
+            | Some n -> n - 1
+            | None -> 0
+          in
+          if count > 0 then Hashtbl.replace active_calls call_id count
+          else Hashtbl.remove active_calls call_id;
           pop_module_var_frame target_module;
           call_depth := saved_depth;
           returning := saved_returning;
@@ -1259,9 +1350,18 @@ let rec eval_expr = function
            raise exn)
       | None ->
         if Hashtbl.mem builtins fname then
-          (Hashtbl.find builtins fname) evaled
+          (try
+             (Hashtbl.find builtins fname) evaled
+           with exn ->
+             let msg =
+               match exn with
+               | Failure m -> m
+               | Sys_error m -> m
+               | _ -> Printexc.to_string exn
+             in
+             failwith (with_line_context msg))
         else
-          failwith ("Unknown function: " ^ fname)
+          failwith (with_line_context ("Unknown function: " ^ fname))
     )
 
 and exec_node = function
@@ -1310,8 +1410,11 @@ and exec_node = function
   | NIf (_, cond_expr, true_body, false_body) ->
     let cond = eval_expr cond_expr in
     if is_truthy cond then run_nodes true_body else run_nodes false_body
-  | NSubDef (_, name, params, body) ->
-    Hashtbl.replace (module_subs_ref !current_module) name { params; body }
+  | NUnless (_, cond_expr, true_body, false_body) ->
+    let cond = eval_expr cond_expr in
+    if is_truthy cond then run_nodes false_body else run_nodes true_body
+  | NSubDef (_, name, params, body, recursive) ->
+    Hashtbl.replace (module_subs_ref !current_module) name { params; body; recursive }
   | NAlias (_, new_name, old_name) ->
     if Hashtbl.mem builtins old_name then
       Hashtbl.replace builtins new_name (Hashtbl.find builtins old_name)
@@ -1367,13 +1470,35 @@ and exec_node = function
   | NCall (_, expr) ->
     ignore (eval_expr expr)
 
+and node_line_no = function
+  | NGlobalDecl (line_no, _, _, _)
+  | NSetVar (line_no, _, _)
+  | NGlobalSet (line_no, _, _)
+  | NSetArr (line_no, _, _)
+  | NSetDict (line_no, _, _)
+  | NReturn (line_no, _)
+  | NIf (line_no, _, _, _)
+  | NUnless (line_no, _, _, _)
+  | NSubDef (line_no, _, _, _, _)
+  | NAlias (line_no, _, _)
+  | NForeach (line_no, _, _, _)
+  | NCall (line_no, _) ->
+    line_no
+
 and run_nodes nodes =
   let rec loop = function
     | [] -> ()
     | _ when !returning -> ()
     | node :: rest ->
-      exec_node node;
-      loop rest
+      let saved_line = !active_line_no in
+      active_line_no := Some (node_line_no node);
+      (try
+         exec_node node;
+         active_line_no := saved_line;
+         loop rest
+       with exn ->
+         active_line_no := saved_line;
+         raise exn)
   in
   loop nodes
 
@@ -1406,6 +1531,17 @@ let status_to_code = function
   | Unix.WSIGNALED n -> 128 + n
   | Unix.WSTOPPED n -> 128 + n
 
+let has_unsafe_shell_metacharacters s =
+  let len = String.length s in
+  let rec loop i =
+    if i >= len then false
+    else
+      match s.[i] with
+      | '|' | '&' | ';' | '<' | '>' | '`' | '$' | '\\' | '\n' -> true
+      | _ -> loop (i + 1)
+  in
+  loop 0
+
 let slurp_file path =
   let ic = open_in_bin path in
   let n = in_channel_length ic in
@@ -1423,6 +1559,116 @@ let normalize_command_argv ctx = function
   | _ ->
     failwith (ctx ^ ": command must be an array")
 
+let re_timeout_seconds = Str.regexp {|^-?[0-9]+\(\.[0-9]+\)?$|}
+let re_octal_mode = Str.regexp {|^0?[0-7]\{3,4\}$|}
+let re_decimal_mode = Str.regexp {|^[0-9]+$|}
+
+let parse_timeout_seconds timeout_opt ctx =
+  match timeout_opt with
+  | None -> None
+  | Some raw ->
+    let s = to_str raw in
+    if not (re_matches re_timeout_seconds s) then
+      failwith (ctx ^ ": timeout must be a positive number of seconds");
+    let seconds = float_of_string s in
+    if seconds <= 0.0 then
+      failwith (ctx ^ ": timeout must be a positive number of seconds");
+    Some seconds
+
+let format_timeout_seconds seconds =
+  let s = Printf.sprintf "%.3f" seconds in
+  let rec trim i =
+    if i < 0 then "0"
+    else if s.[i] = '0' then trim (i - 1)
+    else if s.[i] = '.' then String.sub s 0 i
+    else String.sub s 0 (i + 1)
+  in
+  trim (String.length s - 1)
+
+let sleep_seconds seconds =
+  ignore (Unix.select [] [] [] seconds)
+
+let pid_exists pid =
+  try
+    Unix.kill pid 0;
+    true
+  with
+  | Unix.Unix_error (Unix.ESRCH, _, _) -> false
+  | Unix.Unix_error _ -> true
+
+let kill_pids_gracefully pids =
+  if pids <> [] then begin
+    List.iter
+      (fun pid ->
+        try Unix.kill pid Sys.sigterm
+        with Unix.Unix_error (Unix.ESRCH, _, _) -> ())
+      pids;
+    let deadline = Unix.gettimeofday () +. 0.2 in
+    let rec wait_term () =
+      let alive = List.filter pid_exists pids in
+      if alive = [] then ()
+      else if Unix.gettimeofday () < deadline then begin
+        sleep_seconds 0.01;
+        wait_term ()
+      end else
+        List.iter
+          (fun pid ->
+            if pid_exists pid then
+              try Unix.kill pid Sys.sigkill
+              with Unix.Unix_error (Unix.ESRCH, _, _) -> ())
+          alive
+    in
+    wait_term ()
+  end
+
+let wait_for_children pids timeout_s =
+  let statuses : (int, Unix.process_status) Hashtbl.t = Hashtbl.create 16 in
+  let record_blocking pid =
+    try
+      let _, status = Unix.waitpid [] pid in
+      Hashtbl.replace statuses pid status
+    with
+    | Unix.Unix_error (Unix.ECHILD, _, _) ->
+      Hashtbl.replace statuses pid (Unix.WEXITED 255)
+  in
+  let record_nonblocking pid =
+    try
+      let finished_pid, status = Unix.waitpid [Unix.WNOHANG] pid in
+      if finished_pid = 0 then false
+      else begin
+        Hashtbl.replace statuses pid status;
+        true
+      end
+    with
+    | Unix.Unix_error (Unix.ECHILD, _, _) ->
+      Hashtbl.replace statuses pid (Unix.WEXITED 255);
+      true
+  in
+  match timeout_s with
+  | None ->
+    List.iter record_blocking pids;
+    (statuses, false)
+  | Some timeout ->
+    let deadline = Unix.gettimeofday () +. timeout in
+    let pending = ref pids in
+    let rec loop () =
+      pending := List.filter (fun pid -> not (record_nonblocking pid)) !pending;
+      if !pending = [] then
+        (statuses, false)
+      else if Unix.gettimeofday () >= deadline then begin
+        kill_pids_gracefully !pending;
+        List.iter
+          (fun pid ->
+            if not (Hashtbl.mem statuses pid) then record_blocking pid)
+          !pending;
+        (statuses, true)
+      end else begin
+        sleep_seconds 0.01;
+        loop ()
+      end
+    in
+    loop ()
+
 let command_result_dict ~code ~out ~err =
   let h = Hashtbl.create 3 in
   Hashtbl.replace h "code" (Num (float_of_int code));
@@ -1430,7 +1676,7 @@ let command_result_dict ~code ~out ~err =
   Hashtbl.replace h "err" (Str err);
   Dict h
 
-let run_command_capture cmdv =
+let run_command_capture cmdv timeout_s =
   let cmd = normalize_command_argv "run" cmdv in
   let out_path = Filename.temp_file "slup-run-out" ".tmp" in
   let err_path = Filename.temp_file "slup-run-err" ".tmp" in
@@ -1443,15 +1689,27 @@ let run_command_capture cmdv =
   Unix.close devnull_fd;
   Unix.close out_fd;
   Unix.close err_fd;
-  let _, status = Unix.waitpid [] pid in
-  let code = status_to_code status in
+  let statuses, timed_out = wait_for_children [pid] timeout_s in
+  let status =
+    match hashtbl_find_opt statuses pid with
+    | Some s -> s
+    | None -> Unix.WEXITED 1
+  in
+  let code = if timed_out then 124 else status_to_code status in
   let out = slurp_file out_path in
-  let err = slurp_file err_path in
+  let err =
+    let base = slurp_file err_path in
+    if timed_out then
+      base ^ "run: timed out after " ^
+      format_timeout_seconds (match timeout_s with Some x -> x | None -> 0.0) ^ "s\n"
+    else
+      base
+  in
   Sys.remove out_path;
   Sys.remove err_path;
   command_result_dict ~code ~out ~err
 
-let run_pipeline_capture commands =
+let run_pipeline_capture commands timeout_s =
   if commands = [] then
     failwith "pipe: command list must not be empty";
   let out_path = Filename.temp_file "slup-pipe-out" ".tmp" in
@@ -1499,10 +1757,8 @@ let run_pipeline_capture commands =
   | Some fd -> Unix.close fd
   | None -> ());
   let statuses = Hashtbl.create 8 in
-  List.iter (fun pid ->
-    let _, status = Unix.waitpid [] pid in
-    Hashtbl.replace statuses pid status
-  ) !pids;
+  let waited, timed_out = wait_for_children !pids timeout_s in
+  Hashtbl.iter (fun pid status -> Hashtbl.replace statuses pid status) waited;
   let last_status =
     match !last_pid with
     | Some pid ->
@@ -1511,15 +1767,111 @@ let run_pipeline_capture commands =
       | None -> Unix.WEXITED 1)
     | None -> Unix.WEXITED 1
   in
-  let code = status_to_code last_status in
+  let code = if timed_out then 124 else status_to_code last_status in
   let out = slurp_file out_path in
-  let err = slurp_file err_path in
+  let err =
+    let base = slurp_file err_path in
+    if timed_out then
+      base ^ "pipe: timed out after " ^
+      format_timeout_seconds (match timeout_s with Some x -> x | None -> 0.0) ^ "s\n"
+    else
+      base
+  in
   Sys.remove out_path;
   Sys.remove err_path;
   command_result_dict ~code ~out ~err
 
+let dict_of_assoc pairs =
+  let h = Hashtbl.create (max 8 (List.length pairs)) in
+  List.iter (fun (k, v) -> Hashtbl.replace h k v) pairs;
+  Dict h
+
+let errno_code = function
+  | Unix.EPERM -> 1
+  | Unix.ENOENT -> 2
+  | Unix.EACCES -> 13
+  | Unix.EEXIST -> 17
+  | Unix.ENOTDIR -> 20
+  | Unix.EINVAL -> 22
+  | Unix.ENOSYS -> 38
+  | Unix.ENOTEMPTY -> 39
+  | _ -> 1
+
+let sys_ok fields =
+  dict_of_assoc (("ok", Num 1.0) :: ("code", Num 0.0) :: ("err", Str "") :: fields)
+
+let sys_err code err fields =
+  let c = if code < 0 then 1 else code in
+  dict_of_assoc
+    (("ok", Num 0.0) :: ("code", Num (float_of_int c)) :: ("err", Str err) :: fields)
+
+let sys_type_from_kind = function
+  | Unix.S_REG -> "file"
+  | Unix.S_DIR -> "dir"
+  | Unix.S_LNK -> "link"
+  | Unix.S_CHR -> "char"
+  | Unix.S_BLK -> "block"
+  | Unix.S_FIFO -> "fifo"
+  | Unix.S_SOCK -> "socket"
+
+let path_type path =
+  try
+    let st = Unix.lstat path in
+    sys_type_from_kind st.Unix.st_kind
+  with Unix.Unix_error _ ->
+    "missing"
+
+let sys_path_arg value =
+  match value with
+  | Arr _ | Dict _ | Rex _ -> None
+  | _ ->
+    let p = to_str value in
+    if p = "" then None else Some p
+
+let parse_mode_value = function
+  | Num f when classify_float f <> FP_nan && classify_float f <> FP_infinite ->
+    Some (int_of_float f)
+  | Str s ->
+    if re_matches re_octal_mode s then
+      Some (int_of_string ("0o" ^ s))
+    else if re_matches re_decimal_mode s then
+      Some (int_of_string s)
+    else
+      None
+  | _ -> None
+
+let format_date_ymd tm =
+  Printf.sprintf "%04d-%02d-%02d" (tm.Unix.tm_year + 1900) (tm.Unix.tm_mon + 1) tm.Unix.tm_mday
+
+let format_time_iso tm =
+  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
+    (tm.Unix.tm_year + 1900) (tm.Unix.tm_mon + 1) tm.Unix.tm_mday
+    tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
+
 let register_builtins () =
   let add name f = Hashtbl.replace builtins name f in
+  let sys_capabilities : (string, value list -> value) Hashtbl.t = Hashtbl.create 32 in
+  let add_sys name f = Hashtbl.replace sys_capabilities name f in
+  let stats_fields st =
+    let mode = st.Unix.st_perm land 0o7777 in
+    [
+      ("type", Str (sys_type_from_kind st.Unix.st_kind));
+      ("dev", Num (float_of_int st.Unix.st_dev));
+      ("ino", Num (float_of_int st.Unix.st_ino));
+      ("mode", Num (float_of_int mode));
+      ("mode-oct", Str (Printf.sprintf "%04o" mode));
+      ("nlink", Num (float_of_int st.Unix.st_nlink));
+      ("uid", Num (float_of_int st.Unix.st_uid));
+      ("gid", Num (float_of_int st.Unix.st_gid));
+      ("rdev", Num (float_of_int st.Unix.st_rdev));
+      ("size", Num (float_of_int st.Unix.st_size));
+      ("atime", Num st.Unix.st_atime);
+      ("mtime", Num st.Unix.st_mtime);
+      ("ctime", Num st.Unix.st_ctime);
+      ("blksize", Num 0.0);
+      ("blocks", Num 0.0);
+    ]
+  in
 
   (* Math *)
   add "add" (fun a -> Num (nth_num a 0 +. nth_num a 1));
@@ -1657,6 +2009,14 @@ let register_builtins () =
     output_string oc text;
     close_out oc;
     Str path);
+  add "append-file" (fun a ->
+    let text = nth_str a 0 in
+    let path = nth_str a 1 in
+    if path = "" then failwith "append-file: missing path";
+    let oc = open_out_gen [Open_creat; Open_wronly; Open_append] 0o644 path in
+    output_string oc text;
+    close_out oc;
+    Str path);
   add "read-file" (fun a ->
     let file = nth_str a 0 in
     if file = "" then failwith "read-file: missing filename";
@@ -1698,26 +2058,56 @@ let register_builtins () =
     let file = nth_str a 0 in
     if file = "" then failwith "load: missing filename";
     let path = resolve_load_path file in
-    let ic = open_in path in
+    let abs_path = canonicalize_path path in
+    if Hashtbl.mem module_loading_paths abs_path then
+      failwith ("load: cyclic dependency detected: " ^ format_load_cycle abs_path);
+    if Hashtbl.mem loaded_module_paths abs_path then
+      Str file
+    else begin
+    let ic = open_in abs_path in
     let lines = ref [] in
     (try while true do lines := input_line ic :: !lines done
      with End_of_file -> ());
     close_in ic;
-    let module_name = module_name_from_file path in
-    Hashtbl.replace module_dirs module_name (Filename.dirname path);
+    let module_name = module_name_from_file abs_path in
+    (match hashtbl_find_opt module_source_paths module_name with
+    | Some other when other <> abs_path ->
+      failwith
+        (Printf.sprintf "load: module name collision '%s' between '%s' and '%s'"
+          module_name other abs_path)
+    | _ -> ());
+    Hashtbl.replace module_loading_paths abs_path true;
+    module_load_stack := abs_path :: !module_load_stack;
+    Hashtbl.replace module_source_paths module_name abs_path;
+    Hashtbl.replace module_dirs module_name (Filename.dirname abs_path);
     ignore (module_vars_ref module_name);
     ignore (module_var_frames_ref module_name);
     ignore (module_arrays_ref module_name);
     ignore (module_dicts_ref module_name);
     ignore (module_subs_ref module_name);
     let saved_module = !current_module in
-    current_module := module_name;
-    (try !run_lines_ref (List.rev !lines)
-     with exn ->
-       current_module := saved_module;
-       raise exn);
-    current_module := saved_module;
-    Str file);
+    (try
+      current_module := module_name;
+      (try !run_lines_ref (List.rev !lines)
+       with exn ->
+         current_module := saved_module;
+         raise exn);
+      current_module := saved_module;
+      Hashtbl.replace loaded_module_paths abs_path true;
+      module_load_stack :=
+        (match !module_load_stack with
+        | _ :: tl -> tl
+        | [] -> []);
+      Hashtbl.remove module_loading_paths abs_path;
+      Str file
+    with exn ->
+      module_load_stack :=
+        (match !module_load_stack with
+        | _ :: tl -> tl
+        | [] -> []);
+      Hashtbl.remove module_loading_paths abs_path;
+      raise exn)
+    end);
   add "file-exists" (fun a ->
     let f = nth_str a 0 in
     Num (if f <> "" && Sys.file_exists f && not (Sys.is_directory f) then 1.0 else 0.0));
@@ -1727,14 +2117,28 @@ let register_builtins () =
   add "mkdir" (fun a ->
     let dir = nth_str a 0 in
     if dir = "" then failwith "mkdir: missing directory";
-    (* mkdir -p equivalent: create each component *)
-    let parts = String.split_on_char '/' dir in
-    let _ = List.fold_left (fun acc p ->
-      let path = if acc = "" then p else acc ^ "/" ^ p in
-      if path <> "" && not (Sys.file_exists path) then
-        Unix.mkdir path 0o755;
-      path
-    ) "" parts in
+    (* mkdir -p equivalent that supports absolute paths *)
+    let is_abs = String.length dir > 0 && dir.[0] = '/' in
+    let parts =
+      List.filter (fun p -> p <> "") (String.split_on_char '/' dir)
+    in
+    let _ =
+      List.fold_left
+        (fun acc p ->
+          let path =
+            if acc = "" then p
+            else if acc = "/" then "/" ^ p
+            else Filename.concat acc p
+          in
+          if Sys.file_exists path then begin
+            if not (Sys.is_directory path) then
+              failwith ("mkdir: path component is not a directory: " ^ path)
+          end else
+            Unix.mkdir path 0o755;
+          path)
+        (if is_abs then "/" else "")
+        parts
+    in
     Str dir);
   add "mv" (fun a ->
     let old_path = nth_str a 0 in
@@ -1746,12 +2150,294 @@ let register_builtins () =
     let old_path = nth_str a 0 in
     let new_path = nth_str a 1 in
     if old_path = "" || new_path = "" then failwith "cp: missing arguments";
-    let ic = open_in old_path in
-    let oc = open_out new_path in
-    (try while true do output_char oc (input_char ic) done
-     with End_of_file -> ());
-    close_in ic; close_out oc;
+    let ic = open_in_bin old_path in
+    let oc = open_out_bin new_path in
+    let buf = Bytes.create 65536 in
+    let rec copy_loop () =
+      let n = input ic buf 0 (Bytes.length buf) in
+      if n > 0 then begin
+        output oc buf 0 n;
+        copy_loop ()
+      end
+    in
+    copy_loop ();
+    close_in ic;
+    close_out oc;
+    let st = Unix.stat old_path in
+    Unix.chmod new_path st.Unix.st_perm;
+    Unix.utimes new_path st.Unix.st_atime st.Unix.st_mtime;
     Str new_path);
+  add "rm" (fun a ->
+    let path = nth_str a 0 in
+    if path = "" then failwith "rm: missing path";
+    Sys.remove path;
+    Str path);
+  add "cwd" (fun _ ->
+    Str (Sys.getcwd ()));
+  add "chdir" (fun a ->
+    let dir = nth_str a 0 in
+    if dir = "" then failwith "chdir: missing directory";
+    Sys.chdir dir;
+    Str dir);
+  add "basename" (fun a ->
+    let path = nth_str a 0 in
+    if path = "" then failwith "basename: missing path";
+    Str (Filename.basename path));
+  add "dirname" (fun a ->
+    let path = nth_str a 0 in
+    if path = "" then failwith "dirname: missing path";
+    Str (Filename.dirname path));
+  add "path-type" (fun a ->
+    let path = nth_str a 0 in
+    if path = "" then failwith "path-type: missing path";
+    Str (path_type path));
+  add "path-is-file" (fun a ->
+    let path = nth_str a 0 in
+    if path = "" then failwith "path-is-file: missing path";
+    Num (if path_type path = "file" then 1.0 else 0.0));
+  add "path-is-dir" (fun a ->
+    let path = nth_str a 0 in
+    if path = "" then failwith "path-is-dir: missing path";
+    Num (if path_type path = "dir" then 1.0 else 0.0));
+  add "path-is-socket" (fun a ->
+    let path = nth_str a 0 in
+    if path = "" then failwith "path-is-socket: missing path";
+    Num (if path_type path = "socket" then 1.0 else 0.0));
+  add "path-is-link" (fun a ->
+    let path = nth_str a 0 in
+    if path = "" then failwith "path-is-link: missing path";
+    Num (if path_type path = "link" then 1.0 else 0.0));
+  add "path-join" (fun a ->
+    let parts = List.map to_str a in
+    match parts with
+    | [] -> failwith "path-join: expected at least one segment"
+    | p :: rest ->
+      Str (List.fold_left Filename.concat p rest));
+  add "date" (fun _ ->
+    Str (format_date_ymd (Unix.localtime (Unix.time ()))));
+  add "time" (fun _ ->
+    Num (float_of_int (int_of_float (Unix.time ()))));
+  add "time-iso" (fun _ ->
+    Str (format_time_iso (Unix.gmtime (Unix.time ()))));
+  add_sys "sys.capabilities" (fun _ ->
+    let items =
+      Hashtbl.fold (fun name _ acc -> Str name :: acc) sys_capabilities []
+      |> List.sort (fun a b -> compare (to_str a) (to_str b))
+    in
+    sys_ok [("items", Arr (dynarr_of_list items))]);
+  add_sys "posix.getpid" (fun args ->
+    if args <> [] then sys_err 22 "posix.getpid: expected no arguments" []
+    else sys_ok [("pid", Num (float_of_int (Unix.getpid ())))]);
+  add_sys "posix.getppid" (fun args ->
+    if args <> [] then sys_err 22 "posix.getppid: expected no arguments" []
+    else sys_ok [("pid", Num (float_of_int (Unix.getppid ())))]);
+  add_sys "posix.stat" (fun args ->
+    match Option.bind (list_nth_opt args 0) sys_path_arg with
+    | None -> sys_err 22 "posix.stat: missing path" []
+    | Some path ->
+      (try
+         let st = Unix.stat path in
+         sys_ok (("path", Str path) :: ("exists", Num 1.0) :: stats_fields st)
+       with Unix.Unix_error (err, _, _) ->
+         sys_err (errno_code err) ("posix.stat: " ^ Unix.error_message err)
+           [("path", Str path); ("exists", Num 0.0); ("type", Str "missing")]));
+  add_sys "posix.lstat" (fun args ->
+    match Option.bind (list_nth_opt args 0) sys_path_arg with
+    | None -> sys_err 22 "posix.lstat: missing path" []
+    | Some path ->
+      (try
+         let st = Unix.lstat path in
+         sys_ok (("path", Str path) :: ("exists", Num 1.0) :: stats_fields st)
+       with Unix.Unix_error (err, _, _) ->
+         sys_err (errno_code err) ("posix.lstat: " ^ Unix.error_message err)
+           [("path", Str path); ("exists", Num 0.0); ("type", Str "missing")]));
+  add_sys "posix.access" (fun args ->
+    match Option.bind (list_nth_opt args 0) sys_path_arg with
+    | None -> sys_err 22 "posix.access: missing path" []
+    | Some path ->
+      let mode =
+        match list_nth_opt args 1 with
+        | None -> "e"
+        | Some v ->
+          let s = to_str v in
+          if s = "" then "e" else s
+      in
+      let valid_mode =
+        let len = String.length mode in
+        len > 0 &&
+        let rec loop i =
+          if i >= len then true
+          else
+            match mode.[i] with
+            | 'e' | 'r' | 'w' | 'x' -> loop (i + 1)
+            | _ -> false
+        in
+        loop 0
+      in
+      if not valid_mode then
+        sys_err 22 "posix.access: mode must only contain e/r/w/x" []
+      else
+        let check flag =
+          try
+            match flag with
+            | 'e' -> Sys.file_exists path
+            | 'r' -> Unix.access path [Unix.R_OK]; true
+            | 'w' -> Unix.access path [Unix.W_OK]; true
+            | 'x' -> Unix.access path [Unix.X_OK]; true
+            | _ -> false
+          with Unix.Unix_error _ -> false
+        in
+        let allowed =
+          let rec loop i =
+            if i >= String.length mode then true
+            else if check mode.[i] then loop (i + 1)
+            else false
+          in
+          loop 0
+        in
+        sys_ok [("path", Str path); ("mode", Str mode); ("allowed", Num (if allowed then 1.0 else 0.0))]);
+  add_sys "posix.readlink" (fun args ->
+    match Option.bind (list_nth_opt args 0) sys_path_arg with
+    | None -> sys_err 22 "posix.readlink: missing path" []
+    | Some path ->
+      (try
+         let target = Unix.readlink path in
+         sys_ok [("path", Str path); ("target", Str target)]
+       with Unix.Unix_error (err, _, _) ->
+         sys_err (errno_code err) ("posix.readlink: " ^ Unix.error_message err)
+           [("path", Str path)]));
+  add_sys "posix.symlink" (fun args ->
+    let target =
+      match list_nth_opt args 0 with
+      | Some (Str s) when s <> "" -> Some s
+      | Some v ->
+        let s = to_str v in
+        if s = "" || s = "<array>" || s = "<dict>" || s = "<regex>" then None else Some s
+      | None -> None
+    in
+    let path = Option.bind (list_nth_opt args 1) sys_path_arg in
+    (match target, path with
+    | None, _ -> sys_err 22 "posix.symlink: missing target" []
+    | _, None -> sys_err 22 "posix.symlink: missing path" []
+    | Some target, Some path ->
+      (try
+         Unix.symlink target path;
+         sys_ok [("path", Str path); ("target", Str target)]
+       with Unix.Unix_error (err, _, _) ->
+         sys_err (errno_code err) ("posix.symlink: " ^ Unix.error_message err)
+           [("path", Str path)])));
+  add_sys "posix.unlink" (fun args ->
+    match Option.bind (list_nth_opt args 0) sys_path_arg with
+    | None -> sys_err 22 "posix.unlink: missing path" []
+    | Some path ->
+      (try
+         Unix.unlink path;
+         sys_ok [("path", Str path); ("removed", Num 1.0)]
+       with Unix.Unix_error (err, _, _) ->
+         sys_err (errno_code err) ("posix.unlink: " ^ Unix.error_message err)
+           [("path", Str path); ("removed", Num 0.0)]));
+  add_sys "posix.mkdir" (fun args ->
+    let path = Option.bind (list_nth_opt args 0) sys_path_arg in
+    let mode =
+      match list_nth_opt args 1 with
+      | None -> Some 0o777
+      | Some v -> parse_mode_value v
+    in
+    (match path, mode with
+    | None, _ -> sys_err 22 "posix.mkdir: missing path" []
+    | _, None -> sys_err 22 "posix.mkdir: mode must be numeric or octal string" []
+    | Some path, Some mode ->
+      (try
+         Unix.mkdir path mode;
+         sys_ok
+           [("path", Str path); ("mode", Num (float_of_int mode));
+            ("mode-oct", Str (Printf.sprintf "%04o" (mode land 0o7777)))]
+       with Unix.Unix_error (err, _, _) ->
+         sys_err (errno_code err) ("posix.mkdir: " ^ Unix.error_message err)
+           [("path", Str path)])));
+  add_sys "posix.rmdir" (fun args ->
+    match Option.bind (list_nth_opt args 0) sys_path_arg with
+    | None -> sys_err 22 "posix.rmdir: missing path" []
+    | Some path ->
+      (try
+         Unix.rmdir path;
+         sys_ok [("path", Str path); ("removed", Num 1.0)]
+       with Unix.Unix_error (err, _, _) ->
+         sys_err (errno_code err) ("posix.rmdir: " ^ Unix.error_message err)
+           [("path", Str path); ("removed", Num 0.0)]));
+  add_sys "posix.chmod" (fun args ->
+    let path = Option.bind (list_nth_opt args 0) sys_path_arg in
+    let mode = Option.bind (list_nth_opt args 1) parse_mode_value in
+    (match path, mode with
+    | None, _ -> sys_err 22 "posix.chmod: missing path" []
+    | _, None -> sys_err 22 "posix.chmod: mode must be numeric or octal string" []
+    | Some path, Some mode ->
+      (try
+         Unix.chmod path mode;
+         sys_ok
+           [("path", Str path); ("mode", Num (float_of_int mode));
+            ("mode-oct", Str (Printf.sprintf "%04o" (mode land 0o7777)))]
+       with Unix.Unix_error (err, _, _) ->
+         sys_err (errno_code err) ("posix.chmod: " ^ Unix.error_message err)
+           [("path", Str path)])));
+  add_sys "posix.utime" (fun args ->
+    let path = Option.bind (list_nth_opt args 0) sys_path_arg in
+    let atime = list_nth_opt args 1 in
+    let mtime = list_nth_opt args 2 in
+    let parse_num = function
+      | Some (Num f) when classify_float f <> FP_nan && classify_float f <> FP_infinite -> Some f
+      | Some (Str s) when re_matches re_timeout_seconds s -> Some (float_of_string s)
+      | _ -> None
+    in
+    (match path, parse_num atime, parse_num mtime with
+    | None, _, _ -> sys_err 22 "posix.utime: missing path" []
+    | _, None, _ -> sys_err 22 "posix.utime: atime must be numeric" []
+    | _, _, None -> sys_err 22 "posix.utime: mtime must be numeric" []
+    | Some path, Some atime, Some mtime ->
+      (try
+         Unix.utimes path atime mtime;
+         sys_ok [("path", Str path); ("atime", Num atime); ("mtime", Num mtime)]
+       with Unix.Unix_error (err, _, _) ->
+         sys_err (errno_code err) ("posix.utime: " ^ Unix.error_message err)
+           [("path", Str path)])));
+  add_sys "posix.realpath" (fun args ->
+    match Option.bind (list_nth_opt args 0) sys_path_arg with
+    | None -> sys_err 22 "posix.realpath: missing path" []
+    | Some path ->
+      (try
+         let resolved = Unix.realpath path in
+         sys_ok [("path", Str path); ("realpath", Str resolved)]
+       with Unix.Unix_error (err, _, _) ->
+         sys_err (errno_code err) ("posix.realpath: " ^ Unix.error_message err)
+           [("path", Str path)]));
+  add "sys" (fun a ->
+    let capability = nth_str a 0 in
+    if capability = "" then failwith "sys: missing capability";
+    if capability = "<array>" || capability = "<dict>" || capability = "<regex>" then
+      failwith "sys: capability must be a string";
+    let args =
+      match a with
+      | [] -> []
+      | _ :: tl -> tl
+    in
+    match hashtbl_find_opt sys_capabilities capability with
+    | None -> sys_err 38 ("sys: unknown capability '" ^ capability ^ "'") []
+    | Some handler ->
+      (try handler args
+       with exn ->
+         let msg =
+           match exn with
+           | Failure m -> m
+           | Sys_error m -> m
+           | _ -> Printexc.to_string exn
+         in
+         let msg =
+           if String.length msg > 0 && msg.[String.length msg - 1] = '\n' then
+             String.sub msg 0 (String.length msg - 1)
+           else
+             msg
+         in
+         sys_err 255 ("sys/" ^ capability ^ ": " ^ msg) []));
 
   (* Misc *)
   add "user-input" (fun a ->
@@ -1762,9 +2448,15 @@ let register_builtins () =
   add "die" (fun a ->
     let msg = nth_str a 0 in
     failwith (if msg = "" then "died" else msg));
+  add "stderr" (fun a ->
+    let out = String.concat "" (List.map to_str a) in
+    Printf.eprintf "%s\n" out;
+    Str out);
   add "run" (fun a ->
-    run_command_capture (nth_val a 0));
+    let timeout_s = parse_timeout_seconds (list_nth_opt a 1) "run" in
+    run_command_capture (nth_val a 0) timeout_s);
   add "pipe" (fun a ->
+    let timeout_s = parse_timeout_seconds (list_nth_opt a 1) "pipe" in
     let cmds_val = nth_val a 0 in
     let commands =
       match cmds_val with
@@ -1773,10 +2465,13 @@ let register_builtins () =
       | _ ->
         failwith "pipe: command list must be an array"
     in
-    run_pipeline_capture commands);
+    run_pipeline_capture commands timeout_s);
   add "sh" (fun a ->
     let cmd = nth_str a 0 in
+    let allow_unsafe = is_truthy (nth_val a 1) in
     if cmd = "" then failwith "sh: missing command";
+    if (not allow_unsafe) && has_unsafe_shell_metacharacters cmd then
+      failwith "sh: unsafe shell metacharacters detected; use run()/pipe() or pass 1 as second arg to override";
     let ic = Unix.open_process_in cmd in
     let buf = Buffer.create 256 in
     (try while true do Buffer.add_char buf (input_char ic) done
@@ -1794,7 +2489,51 @@ let register_builtins () =
     let s = Buffer.contents buf in
     let s = if String.length s > 0 && s.[String.length s - 1] = '\n'
             then String.sub s 0 (String.length s - 1) else s in
-    Str s)
+    Str s);
+
+  let alias new_name old_name =
+    Hashtbl.replace builtins new_name (Hashtbl.find builtins old_name)
+  in
+  alias "text->len" "length";
+  alias "text->upper" "upper";
+  alias "text->lower" "lower";
+
+  alias "array->len" "len";
+  alias "array->get" "get";
+  alias "array->push" "push";
+  alias "array->pop" "pop";
+
+  alias "dict->get" "dict-get";
+  alias "dict->set" "dict-set";
+  alias "dict->keys" "dict-keys";
+  alias "dict->has" "dict-has";
+  alias "dict->del" "dict-del";
+
+  alias "dir->exists" "dir-exists";
+  alias "dir->entries" "read-dir";
+  alias "dir->list" "read-dir";
+  alias "file->exists" "file-exists";
+  alias "dir->cwd" "cwd";
+  alias "dir->chdir" "chdir";
+  alias "path->join" "path-join";
+  alias "path->basename" "basename";
+  alias "path->dirname" "dirname";
+  alias "path->type" "path-type";
+  alias "path->is-file" "path-is-file";
+  alias "path->is-dir" "path-is-dir";
+  alias "path->is-socket" "path-is-socket";
+  alias "path->is-link" "path-is-link";
+
+  alias "file->text" "read-file";
+  alias "text->file" "write-file";
+  alias "file->append" "append-file";
+  alias "file->lines" "read-file-lines";
+  alias "lines->file" "write-lines-file";
+  alias "file->remove" "rm";
+  alias "sys->call" "sys";
+  alias "date->today" "date";
+  alias "time->now" "time";
+  alias "time->iso-utc" "time-iso"
 
 (* ============================================================
    Main

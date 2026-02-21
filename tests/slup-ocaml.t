@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
-use Test::More tests => 60;
+use Test::More tests => 119;
 use File::Path qw(make_path);
 use File::Temp qw(tempfile tempdir);
 use FindBin qw($Bin);
@@ -56,6 +56,15 @@ sub write_text {
     close $fh;
 }
 
+sub slurp_raw {
+    my ($path) = @_;
+    open my $fh, '<:raw', $path or die "cannot read $path: $!";
+    local $/;
+    my $bytes = <$fh>;
+    close $fh;
+    return $bytes;
+}
+
 {
     my ($status, $out) = run_slup(<<'SLUP');
 set $sum = add(2, 3)
@@ -96,10 +105,144 @@ SLUP
 
 {
     my ($status, $out) = run_slup(<<'SLUP');
+when eq("a", "a")
+  print("x")
+else
+  print("y")
+end
+SLUP
+    is($status, 0, 'when executes then-branch when condition is true (ocaml)');
+    is($out, "x\n", 'when true condition output (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+when eq("a", "b")
+  print("x")
+else
+  print("y")
+end
+SLUP
+    is($status, 0, 'when executes else-branch when condition is false (ocaml)');
+    is($out, "y\n", 'when false condition output (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+unless eq("a", "b")
+  print("x")
+else
+  print("y")
+end
+SLUP
+    is($status, 0, 'unless executes then-branch when condition is false (ocaml)');
+    is($out, "x\n", 'unless false condition output (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+unless eq("a", "a")
+  print("x")
+else
+  print("y")
+end
+SLUP
+    is($status, 0, 'unless executes else-branch when condition is true (ocaml)');
+    is($out, "y\n", 'unless true condition output (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+sub count-down($n)
+  if lt($n, 1)
+    return(0)
+  end
+  return(add(1, count-down(sub($n, 1))))
+end
+print(count-down(3))
+SLUP
+    ok($status != 0, 'sub recursion is rejected by default (ocaml)');
+    like($out, qr/recursion is not allowed for sub 'count-down'/, 'sub recursion error explains rec requirement (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+rec count-down($n)
+  if lt($n, 1)
+    return(0)
+  end
+  return(add(1, count-down(sub($n, 1))))
+end
+print(count-down(3))
+SLUP
+    is($status, 0, 'rec allows direct recursion (ocaml)');
+    is($out, "3\n", 'rec direct recursion computes expected result (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+sub a($n)
+  if lt($n, 1)
+    return(0)
+  end
+  return(b(sub($n, 1)))
+end
+sub b($n)
+  if lt($n, 1)
+    return(0)
+  end
+  return(a(sub($n, 1)))
+end
+print(a(2))
+SLUP
+    ok($status != 0, 'mutual recursion is rejected for non-rec functions (ocaml)');
+    like($out, qr/recursion is not allowed for sub 'a'/, 'mutual recursion error points at recursive target (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+rec a($n)
+  if lt($n, 1)
+    return(0)
+  end
+  return(b(sub($n, 1)))
+end
+rec b($n)
+  if lt($n, 1)
+    return(0)
+  end
+  return(a(sub($n, 1)))
+end
+print(a(2))
+SLUP
+    is($status, 0, 'mutual recursion is allowed for rec functions (ocaml)');
+    is($out, "0\n", 'mutual rec recursion can terminate via base case (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
 return("x")
 SLUP
     ok($status != 0, 'return(...) outside sub fails (ocaml)');
     like($out, qr/return outside sub/, 'outside-sub return has clear error (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+print("ok")
+missing()
+SLUP
+    ok($status != 0, 'unknown call fails with line context (ocaml)');
+    like($out, qr/line 2: Unknown function: missing/, 'unknown call reports line-prefixed error (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+print("ok")
+read-file("")
+SLUP
+    ok($status != 0, 'builtin runtime error fails with line context (ocaml)');
+    like($out, qr/line 2: read-file: missing filename/, 'builtin runtime error reports line-prefixed error (ocaml)');
 }
 
 {
@@ -168,6 +311,24 @@ if eq("a", "a")
 SLUP
     ok($status != 0, 'missing end in if fails (ocaml)');
     like($out, qr/if without matching end/, 'missing if end has clear error (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+when eq("a", "a")
+  print("x")
+SLUP
+    ok($status != 0, 'missing end in when fails (ocaml)');
+    like($out, qr/when without matching end/, 'missing when end has clear error (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+unless eq("a", "a")
+  print("x")
+SLUP
+    ok($status != 0, 'missing end in unless fails (ocaml)');
+    like($out, qr/unless without matching end/, 'missing unless end has clear error (ocaml)');
 }
 
 {
@@ -312,6 +473,55 @@ SLUP
 
 {
     my $dir = tempdir(CLEANUP => 1);
+    write_text(File::Spec->catfile($dir, 'alpha.slup'), <<'SLUP');
+$LOAD_COUNT = add($LOAD_COUNT, 1)
+SLUP
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+$LOAD_COUNT = 0
+load("alpha")
+load("alpha")
+print($LOAD_COUNT)
+SLUP
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    is($status, 0, 'loading same module twice executes module once (ocaml)');
+    is($out, "1\n", 'load() caches module execution by resolved path (ocaml)');
+}
+
+{
+    my $dir = tempdir(CLEANUP => 1);
+    write_text(File::Spec->catfile($dir, 'a.slup'), <<'SLUP');
+load("b")
+SLUP
+    write_text(File::Spec->catfile($dir, 'b.slup'), <<'SLUP');
+load("a")
+SLUP
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+load("a")
+SLUP
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    ok($status != 0, 'cyclic load fails (ocaml)');
+    like($out, qr/load: cyclic dependency detected:/, 'cyclic load failure is clear (ocaml)');
+}
+
+{
+    my $dir = tempdir(CLEANUP => 1);
+    write_text(File::Spec->catfile($dir, 'left', 'alpha.slup'), <<'SLUP');
+print("left")
+SLUP
+    write_text(File::Spec->catfile($dir, 'right', 'alpha.slup'), <<'SLUP');
+print("right")
+SLUP
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+load("left/alpha")
+load("right/alpha")
+SLUP
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    ok($status != 0, 'module name collision across different files fails (ocaml)');
+    like($out, qr/module name collision 'alpha'/, 'module name collision error is clear (ocaml)');
+}
+
+{
+    my $dir = tempdir(CLEANUP => 1);
     write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
 set @ARGS = ["a", "b"]
 print(len(@ARGS))
@@ -320,6 +530,38 @@ SLUP
     my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
     is($status, 0, 'uppercase @ARGS and %ENV are globals (ocaml)');
     is($out, "2\n1\n", 'global arrays/dicts are accessible without namespacing (ocaml)');
+}
+
+{
+    my $dir = tempdir(CLEANUP => 1);
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+print(sh("echo ok"))
+print(sh("echo ok | cat", 1))
+SLUP
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    is($status, 0, 'sh() works for safe commands and explicit-unsafe override (ocaml)');
+    is($out, "ok\nok\n", 'sh() output is captured for safe and overridden commands (ocaml)');
+}
+
+{
+    my $dir = tempdir(CLEANUP => 1);
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+sh("echo ok | cat")
+SLUP
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    ok($status != 0, 'sh() rejects unsafe shell metacharacters by default (ocaml)');
+    like($out, qr/unsafe shell metacharacters detected/, 'unsafe sh() error is clear (ocaml)');
+}
+
+{
+    my $dir = tempdir(CLEANUP => 1);
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+stderr("warn")
+print("out")
+SLUP
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    is($status, 0, 'stderr() builtin executes (ocaml)');
+    like($out, qr/(?:warn\nout\n|out\nwarn\n)\z/, 'stderr() emits alongside stdout with line semantics (ocaml)');
 }
 
 {
@@ -391,6 +633,205 @@ print(dict-get(%r, "err"))
 SLUP
     is($status, 0, 'pipe() returns control for non-zero pipeline exits (ocaml)');
     is($out, "9\n\nboom\n", 'pipe() reports last command status and stderr (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+set %r = run(["/bin/sh", "-c", "sleep 2; printf late"], 0.1)
+print(dict-get(%r, "code"))
+print(eq(dict-get(%r, "out"), ""))
+print(matchrx(dict-get(%r, "err"), #"timed out after"))
+SLUP
+    is($status, 0, 'run() timeout completes without hanging interpreter (ocaml)');
+    is($out, "124\n1\n1\n", 'run() timeout reports timeout code and error (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+set %r = pipe([["/bin/sh", "-c", "sleep 2; printf late"], ["cat"]], 0.1)
+print(dict-get(%r, "code"))
+print(eq(dict-get(%r, "out"), ""))
+print(matchrx(dict-get(%r, "err"), #"timed out after"))
+SLUP
+    is($status, 0, 'pipe() timeout completes without hanging interpreter (ocaml)');
+    is($out, "124\n1\n1\n", 'pipe() timeout reports timeout code and error (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+run(["/bin/sh", "-c", "printf ok"], 0)
+SLUP
+    ok($status != 0, 'run() rejects non-positive timeout (ocaml)');
+    like($out, qr/run: timeout must be a positive number of seconds/, 'run() timeout validation error is clear (ocaml)');
+}
+
+{
+    my $dir = tempdir(CLEANUP => 1);
+    my $src = File::Spec->catfile($dir, 'src.bin');
+    my $dst = File::Spec->catfile($dir, 'dst.bin');
+    open my $fh, '>:raw', $src or die "cannot write $src: $!";
+    print {$fh} "\x00\xffABC\x0a";
+    close $fh;
+    chmod 0751, $src or die "cannot chmod $src: $!";
+    my $fixed = time - 120;
+    utime $fixed, $fixed, $src or die "cannot utime $src: $!";
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<"SLUP");
+cp("$src", "$dst")
+print(file->exists("$dst"))
+SLUP
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    is($status, 0, 'cp() executes for binary files (ocaml)');
+    is($out, "1\n", 'cp() creates destination file (ocaml)');
+    is(slurp_raw($dst), slurp_raw($src), 'cp() preserves binary content (ocaml)');
+    is((stat($dst))[2] & 07777, (stat($src))[2] & 07777, 'cp() preserves mode bits (ocaml)');
+    is((stat($dst))[9], (stat($src))[9], 'cp() preserves mtime (ocaml)');
+}
+
+{
+    my $dir = tempdir(CLEANUP => 1);
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+set %caps = sys("sys.capabilities")
+print(dict-get(%caps, "ok"))
+print(gt(len(dict-get(%caps, "items")), 0))
+set %pid = sys->call("posix.getpid")
+print(dict-get(%pid, "ok"))
+print(gt(dict-get(%pid, "pid"), 0))
+SLUP
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    is($status, 0, 'sys capabilities and sys->call alias execute (ocaml)');
+    is($out, "1\n1\n1\n1\n", 'sys reports capabilities and getpid through alias (ocaml)');
+}
+
+{
+    my $dir = tempdir(CLEANUP => 1);
+    my $path = File::Spec->catfile($dir, 'node.txt');
+    my $missing = File::Spec->catfile($dir, 'missing.txt');
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<"SLUP");
+text->file("abc", "$path")
+set %s = sys("posix.stat", "$path")
+print(dict-get(%s, "ok"))
+print(dict-get(%s, "type"))
+print(gt(dict-get(%s, "size"), 0))
+set %a = sys("posix.access", "$path", "rw")
+print(dict-get(%a, "ok"))
+print(dict-get(%a, "allowed"))
+set %m = sys("posix.stat", "$missing")
+print(dict-get(%m, "ok"))
+print(gt(dict-get(%m, "code"), 0))
+set %bad = sys("posix.nope")
+print(dict-get(%bad, "ok"))
+print(gt(dict-get(%bad, "code"), 0))
+SLUP
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    is($status, 0, 'sys posix stat/access paths and error paths execute (ocaml)');
+    is($out, "1\nfile\n1\n1\n1\n0\n1\n0\n1\n", 'sys returns structured ok/code for success and failures (ocaml)');
+}
+
+{
+    my $dir = tempdir(CLEANUP => 1);
+    my $node = File::Spec->catfile($dir, 'node');
+    my $link = File::Spec->catfile($dir, 'node.link');
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<"SLUP");
+set %mk = sys("posix.mkdir", "$node", "0750")
+print(dict-get(%mk, "ok"))
+set %ch = sys("posix.chmod", "$node", "0700")
+print(dict-get(%ch, "ok"))
+set %st = sys("posix.stat", "$node")
+print(eq(dict-get(%st, "type"), "dir"))
+set %ut = sys("posix.utime", "$node", 1, 2)
+print(dict-get(%ut, "ok"))
+set %ln = sys("posix.symlink", "$node", "$link")
+print(dict-get(%ln, "ok"))
+set %ls = sys("posix.lstat", "$link")
+print(eq(dict-get(%ls, "type"), "link"))
+set %rl = sys("posix.readlink", "$link")
+print(dict-get(%rl, "ok"))
+set %ul = sys("posix.unlink", "$link")
+print(dict-get(%ul, "ok"))
+set %rd = sys("posix.rmdir", "$node")
+print(dict-get(%rd, "ok"))
+SLUP
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    is($status, 0, 'sys posix mutation capabilities execute (ocaml)');
+    is($out, "1\n1\n1\n1\n1\n1\n1\n1\n1\n", 'mkdir/chmod/stat/utime/symlink/lstat/readlink/unlink/rmdir all succeed (ocaml)');
+}
+
+{
+    my $dir = tempdir(CLEANUP => 1);
+    my $path = File::Spec->catfile($dir, 'node.txt');
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<"SLUP");
+text->file("x", "$path")
+print(eq(path->basename("$path"), "node.txt"))
+print(eq(path->dirname("$path"), "$dir"))
+print(eq(path->type("$path"), "file"))
+print(path->is-file("$path"))
+print(path->is-dir("$dir"))
+print(eq(path->type("$dir"), "dir"))
+print(gt(text->len(date->today()), 0))
+print(gt(time->now(), 0))
+print(matchrx(time->iso-utc(), #"T"))
+print(gt(len(dir->list("$dir")), 0))
+SLUP
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    is($status, 0, 'path/date/time aliases execute (ocaml)');
+    is($out, "1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n", 'path/date/time and dir->list aliases preserve behavior (ocaml)');
+}
+
+{
+    my $dir = tempdir(CLEANUP => 1);
+    my $lines_path = File::Spec->catfile($dir, 'lines.txt');
+    my $text_path = File::Spec->catfile($dir, 'text.txt');
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<"SLUP");
+set \@xs = ["alpha", "beta"]
+lines->file(\@xs, "$lines_path")
+set \@ys = file->lines("$lines_path")
+print(len(\@ys))
+print(get(\@ys, 0))
+text->file("hello", "$text_path")
+print(file->text("$text_path"))
+SLUP
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    is($status, 0, 'directional file aliases execute (ocaml)');
+    is($out, "2\nalpha\nhello\n", 'file->text/text->file and file->lines/lines->file roundtrip correctly (ocaml)');
+}
+
+{
+    my $dir = tempdir(CLEANUP => 1);
+    my $subdir = File::Spec->catfile($dir, 'subdir');
+    my $text_path = File::Spec->catfile($dir, 'aliases.txt');
+    write_text(File::Spec->catfile($dir, 'main.slup'), <<"SLUP");
+mkdir("$subdir")
+set \@xs = ["a", "b"]
+array->push(\@xs, "c")
+print(array->len(\@xs))
+print(array->get(\@xs, 2))
+print(array->pop(\@xs))
+set %d = {k: "v"}
+print(dict->get(%d, "k"))
+dict->set(%d, "k", "z")
+print(dict->has(%d, "k"))
+print(dict->get(%d, "k"))
+print(text->len("abc"))
+print(text->upper("ab"))
+print(text->lower("XY"))
+print(dir->exists("$subdir"))
+text->file("x", "$text_path")
+print(file->exists("$text_path"))
+print(gt(text->len(dir->cwd()), 0))
+set \$jp = path->join("$subdir", "joined.txt")
+text->file("A", \$jp)
+file->append("B", \$jp)
+print(file->text(\$jp))
+file->remove(\$jp)
+print(file->exists(\$jp))
+dir->chdir("$subdir")
+print(dir->exists(".."))
+set \@entries = dir->entries("$dir")
+print(gt(array->len(\@entries), 0))
+SLUP
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    is($status, 0, 'namespaced aliases execute (ocaml)');
+    is($out, "3\nc\nc\nv\n1\nz\n3\nAB\nxy\n1\n1\n1\nAB\n0\n1\n1\n", 'array/dict/text/dir/file aliases preserve behavior (ocaml)');
 }
 
 {
