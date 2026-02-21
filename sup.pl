@@ -2274,6 +2274,144 @@ sub parse_light_param_list {
     return @params;
 }
 
+# Returns 'arglist' if commas exist at depth 0, 'expr' otherwise.
+sub light_classify_parens {
+    my ($content) = @_;
+    my $depth = 0;
+    my $in_quote = 0;
+    my $escaped = 0;
+
+    for my $ch (split //, $content) {
+        if ($in_quote && $escaped) {
+            $escaped = 0;
+        } elsif ($in_quote && $ch eq '\\') {
+            $escaped = 1;
+        } elsif ($ch eq '"') {
+            $in_quote = !$in_quote;
+        } elsif (!$in_quote) {
+            if ($ch eq '(' || $ch eq '[' || $ch eq '{') {
+                $depth++;
+            } elsif ($ch eq ')' || $ch eq ']' || $ch eq '}') {
+                $depth--;
+            } elsif ($ch eq ',' && $depth == 0) {
+                return 'arglist';
+            }
+        }
+    }
+    return 'expr';
+}
+
+# Returns true if the content has infix operators at depth 0 (between values).
+sub has_infix_ops_at_depth0 {
+    my ($content) = @_;
+    my $tokens = eval { light_tokenize_expr($content) };
+    return 0 if $@;
+    my $depth = 0;
+    my $prev_is_value = 0;
+    for my $tok (@$tokens) {
+        if ($tok->{type} eq 'punct') {
+            if ($tok->{value} =~ /^[(\[{]$/) {
+                $depth++;
+                $prev_is_value = 0;
+            } elsif ($tok->{value} =~ /^[)\]}]$/) {
+                $depth--;
+                $prev_is_value = 1;
+            } else {
+                $prev_is_value = 0;
+            }
+        } elsif ($depth == 0 && $tok->{type} eq 'op' && $prev_is_value) {
+            return 1;
+        } else {
+            $prev_is_value = ($tok->{type} =~ /^(ident|num|str|bool|nil|kwlit)$/);
+        }
+    }
+    return 0;
+}
+
+# Split a command-mode tail into individual args.
+# Splits on whitespace and commas at depth 0, outside quotes.
+# Standalone paren groups classified as arglists are spliced.
+sub light_collect_args {
+    my ($tail) = @_;
+    $tail =~ s/^\s+//;
+    $tail =~ s/\s+$//;
+    return () if $tail eq '';
+
+    my @raw_tokens;
+    my $current = '';
+    my $depth = 0;
+    my $in_quote = 0;
+    my $escaped = 0;
+
+    for my $ch (split //, $tail) {
+        if ($in_quote && $escaped) {
+            $escaped = 0;
+            $current .= $ch;
+            next;
+        }
+        if ($in_quote && $ch eq '\\') {
+            $escaped = 1;
+            $current .= $ch;
+            next;
+        }
+        if ($ch eq '"') {
+            $in_quote = !$in_quote;
+            $current .= $ch;
+            next;
+        }
+        if ($in_quote) {
+            $current .= $ch;
+            next;
+        }
+        if ($ch eq '(' || $ch eq '[' || $ch eq '{') {
+            $depth++;
+            $current .= $ch;
+            next;
+        }
+        if ($ch eq ')' || $ch eq ']' || $ch eq '}') {
+            $depth--;
+            $current .= $ch;
+            next;
+        }
+        if ($depth == 0 && ($ch eq ',' || $ch =~ /\s/)) {
+            if ($current =~ /\S/) {
+                push @raw_tokens, $current;
+            }
+            $current = '';
+            next;
+        }
+        $current .= $ch;
+    }
+    push @raw_tokens, $current if $current =~ /\S/;
+
+    # Process paren groups: splice arglists, keep infix exprs whole
+    my @args;
+    for my $tok (@raw_tokens) {
+        my $trimmed = $tok;
+        $trimmed =~ s/^\s+//;
+        $trimmed =~ s/\s+$//;
+
+        if ($trimmed =~ /^\(/ && $trimmed !~ /^[A-Za-z_]/) {
+            my ($inner, $rest) = eval { extract_balanced_parens($trimmed) };
+            if (!$@ && defined($rest)) {
+                $rest =~ s/^\s+//;
+                if ($rest eq '') {
+                    my $class = light_classify_parens($inner);
+                    if ($class eq 'arglist') {
+                        my @parts = parse_arglist($inner);
+                        push @args, @parts;
+                    } else {
+                        push @args, $trimmed;
+                    }
+                    next;
+                }
+            }
+        }
+        push @args, $trimmed;
+    }
+    return @args;
+}
+
 sub collect_light_do_block {
     my ($lines_ref, $start_idx, $label) = @_;
     $label //= 'block';
@@ -2343,14 +2481,44 @@ sub normalize_light_program {
             next;
         }
 
-        if ($line =~ /^defun\s+($LIGHT_IDENT_RE)(?:\s*\[([^\]]*)\])?\s+do$/) {
-            my ($name, $raw_params) = ($1, $2 // '');
-            my @params = parse_light_param_list($raw_params, 'defun');
-            push @stack, { kind => 'defun' };
-            my $plist = join(', ', map { "\$$_" } @params);
-            push @out, "defun $name($plist)";
-            $i++;
-            next;
+        if ($line =~ /^defun\s+($LIGHT_IDENT_RE)(.*)$/) {
+            my ($name, $rest) = ($1, $2);
+            my @params;
+            my $matched = 0;
+
+            # defun hello(a, b) do | defun hello (a, b) do
+            if ($rest =~ /^\s*\(([^)]*)\)\s+do$/) {
+                @params = parse_light_param_list($1, 'defun');
+                $matched = 1;
+            }
+            # defun hello [a, b] do (existing bracket form)
+            elsif ($rest =~ /^\s*\[([^\]]*)\]\s+do$/) {
+                @params = parse_light_param_list($1, 'defun');
+                $matched = 1;
+            }
+            # defun hello do (no params)
+            elsif ($rest =~ /^\s+do$/) {
+                @params = ();
+                $matched = 1;
+            }
+            # defun hello a b do (bare params)
+            elsif ($rest =~ /^\s+(.+)\s+do$/) {
+                my $params_str = $1;
+                @params = grep { $_ ne '' } split /[\s,]+/, $params_str;
+                for my $p (@params) {
+                    die "Invalid parameter name '$p' in defun\n"
+                        unless $p =~ /^$LIGHT_IDENT_RE$/;
+                }
+                $matched = 1;
+            }
+
+            if ($matched) {
+                push @stack, { kind => 'defun' };
+                my $plist = join(', ', map { "\$$_" } @params);
+                push @out, "defun $name($plist)";
+                $i++;
+                next;
+            }
         }
 
         if ($line =~ /^if\s+(.+)\s+then$/) {
@@ -2469,25 +2637,61 @@ sub normalize_light_program {
             next;
         }
 
-        if ($line =~ /^($LIGHT_IDENT_RE)\s+(.+)$/) {
-            my ($head, $tail) = ($1, $2);
+        # Case A: name(...) — no space before paren (space rule: arglist syntax)
+        if ($line =~ /^($LIGHT_IDENT_RE)\(/) {
+            my $head = $1;
+            my $after_head = substr($line, length($head));
+
+            # Reject control keywords with attached parens
+            if ($head =~ /^(if|elif|while|foreach|when|unless|switch|fori)$/) {
+                die "Syntax error: '$head(...)' is not allowed — use '$head ...' with a space\n";
+            }
+
             if ($head !~ /^(if|elif|else|while|foreach|def|let|defun|fun|return|break|continue|end|alias|global|when|unless|switch|case|fori|set|rec|sub|defn)$/) {
-                my $candidate = "$head($tail)";
-                if ($candidate !~ /[\$\@\%]/ && $candidate !~ /[A-Za-z_][A-Za-z0-9_]*-[A-Za-z0-9_]/ && $candidate !~ /[A-Za-z_][A-Za-z0-9_]*\/[A-Za-z_][A-Za-z0-9_]*\s*\(/ && $candidate !~ /\b(?:true|false)\s*\(/ && $candidate !~ /\\/) {
-                    push @out, maybe_normalize_light_expr($candidate);
-                    $i++;
-                    next;
+                my ($inner, $rest_after) = eval { extract_balanced_parens($after_head) };
+                if (!$@) {
+                    $rest_after //= '';
+                    $rest_after =~ s/^\s+//;
+                    $rest_after =~ s/\s+$//;
+
+                    if ($rest_after eq '') {
+                        my $candidate = "$head($inner)";
+                        if ($candidate !~ /[\$\@\%]/
+                            && $candidate !~ /[A-Za-z_][A-Za-z0-9_]*-[A-Za-z0-9_]/
+                            && $candidate !~ /[A-Za-z_][A-Za-z0-9_]*\/[A-Za-z_][A-Za-z0-9_]*\s*\(/
+                            && $candidate !~ /\b(?:true|false)\s*\(/
+                            && $candidate !~ /\\/) {
+
+                            my $class = light_classify_parens($inner);
+                            if ($class eq 'expr' && has_infix_ops_at_depth0($inner)) {
+                                die "Space rule: use '$head ($inner)' instead of '$head($inner)' for infix expressions\n";
+                            }
+
+                            push @out, maybe_normalize_light_expr($candidate);
+                            $i++;
+                            next;
+                        }
+                    }
                 }
             }
         }
 
-        if ($line =~ /^($LIGHT_IDENT_RE)\s*\((.*)\)$/) {
-            # Keep legacy calls untouched when they clearly use legacy-only forms.
-            # This limits light normalization to call statements that are safe to lower.
-            if ($line !~ /[\$\@\%]/ && $line !~ /[A-Za-z_][A-Za-z0-9_]*-[A-Za-z0-9_]/ && $line !~ /[A-Za-z_][A-Za-z0-9_]*\/[A-Za-z_][A-Za-z0-9_]*\s*\(/ && $line !~ /\b(?:true|false)\s*\(/ && $line !~ /\\/) {
-                push @out, maybe_normalize_light_expr($line);
-                $i++;
-                next;
+        # Case B: name tail — space after name (command mode, args collected)
+        if ($line =~ /^($LIGHT_IDENT_RE)\s+(.+)$/) {
+            my ($head, $tail) = ($1, $2);
+            if ($head !~ /^(if|elif|else|while|foreach|def|let|defun|fun|return|break|continue|end|alias|global|when|unless|switch|case|fori|set|rec|sub|defn)$/) {
+                my $whole = "$head $tail";
+                if ($whole !~ /[\$\@\%]/
+                    && $whole !~ /[A-Za-z_][A-Za-z0-9_]*-[A-Za-z0-9_]/
+                    && $whole !~ /[A-Za-z_][A-Za-z0-9_]*\/[A-Za-z_][A-Za-z0-9_]*\s*\(/
+                    && $whole !~ /\b(?:true|false)\s*\(/
+                    && $whole !~ /\\/) {
+                    my @args = light_collect_args($tail);
+                    my @normed = map { maybe_normalize_light_expr($_) } @args;
+                    push @out, "$head(" . join(', ', @normed) . ")";
+                    $i++;
+                    next;
+                }
             }
         }
 
@@ -2735,6 +2939,40 @@ sub parse_arglist {
     die "Unbalanced brackets in argument list: '$str'\n" if $depth != 0;
     push @args, $current if $current =~ /\S/;
     return @args;
+}
+
+# Given a string starting with '(', extract the balanced paren content.
+# Returns ($inner, $rest_after_close).
+sub extract_balanced_parens {
+    my ($str) = @_;
+    die "extract_balanced_parens: expected '(' at start\n" unless substr($str, 0, 1) eq '(';
+    my $depth = 0;
+    my $in_quote = 0;
+    my $escaped = 0;
+    my $len = length $str;
+
+    for (my $i = 0; $i < $len; $i++) {
+        my $ch = substr($str, $i, 1);
+        if ($in_quote && $escaped) {
+            $escaped = 0;
+        } elsif ($in_quote && $ch eq '\\') {
+            $escaped = 1;
+        } elsif ($ch eq '"') {
+            $in_quote = !$in_quote;
+        } elsif (!$in_quote) {
+            if ($ch eq '(') {
+                $depth++;
+            } elsif ($ch eq ')') {
+                $depth--;
+                if ($depth == 0) {
+                    my $inner = substr($str, 1, $i - 1);
+                    my $rest = substr($str, $i + 1);
+                    return ($inner, $rest);
+                }
+            }
+        }
+    }
+    die "Unbalanced parentheses in: '$str'\n";
 }
 
 # ============================================================

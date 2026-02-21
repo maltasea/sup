@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
-use Test::More tests => 72;
+use Test::More tests => 96;
 use File::Temp qw(tempfile tempdir);
 use FindBin qw($Bin);
 use File::Spec;
@@ -520,6 +520,142 @@ foreach $v @x
 SUP
     ok($status != 0, 'missing end in foreach fails');
     like($out, qr/foreach without matching end/, 'missing foreach end has clear error');
+}
+
+# ============================================================
+# Space rule and arg collection tests
+# ============================================================
+
+# print a b / print a,b / print (a,b) / print(a,b) — all equivalent (two args)
+{
+    my ($status, $out) = run_sup(<<'SUP');
+defun two(a, b) do
+  return concat(a, b)
+end
+print two("x", "y")
+SUP
+    is($status, 0, 'space rule: print func args executes');
+    is($out, "xy\n", 'space rule: space-separated args work');
+}
+
+{
+    my ($status, $out) = run_sup(<<'SUP');
+defun two(a, b) do
+  return concat(a, b)
+end
+print two("x","y")
+SUP
+    is($status, 0, 'space rule: comma-separated bare args');
+    is($out, "xy\n", 'space rule: comma args produce same result');
+}
+
+{
+    my ($status, $out) = run_sup(<<'SUP');
+defun two(a, b) do
+  return concat(a, b)
+end
+print two("x", "y")
+print(two("x", "y"))
+SUP
+    is($status, 0, 'space rule: bare-call and paren-call equivalent');
+    is($out, "xy\nxy\n", 'space rule: both forms produce same result');
+}
+
+# print (a,b) — paren group with commas spliced as arglist
+{
+    my ($status, $out) = run_sup(<<'SUP');
+print(add(2, 3))
+SUP
+    is($status, 0, 'space rule: nested call in arglist');
+    is($out, "5\n", 'space rule: nested call evaluates correctly');
+}
+
+# print (a > b) — allowed, passes infix result
+{
+    my ($status, $out) = run_sup(<<'SUP');
+let a = 10
+let b = 3
+print (a > b)
+SUP
+    is($status, 0, 'space rule: spaced paren infix expr allowed');
+    is($out, "1\n", 'space rule: infix expr passed as arg');
+}
+
+# print(a > b) — rejected with error
+{
+    my ($status, $out) = run_sup(<<'SUP');
+let a = 10
+let b = 3
+print(a > b)
+SUP
+    ok($status != 0, 'space rule: print(a > b) rejected');
+    like($out, qr/Space rule/, 'space rule: print(a > b) error message');
+}
+
+# if(a > b) — rejected with error
+{
+    my ($status, $out) = run_sup(<<'SUP');
+if(1 > 0)
+  print("x")
+end
+SUP
+    ok($status != 0, 'space rule: if(...) rejected');
+    like($out, qr/not allowed/, 'space rule: if(...) error message');
+}
+
+# defun hello(a, b) do — attached parens
+{
+    my ($status, $out) = run_sup(<<'SUP');
+defun greet(name, greeting) do
+  return concat(greeting, name)
+end
+print(greet("world", "hello "))
+SUP
+    is($status, 0, 'defun with attached parens executes');
+    is($out, "hello world\n", 'defun attached parens semantics');
+}
+
+# defun hello (a, b) do — spaced parens
+{
+    my ($status, $out) = run_sup(<<'SUP');
+defun greet (name, greeting) do
+  return concat(greeting, name)
+end
+print(greet("world", "hello "))
+SUP
+    is($status, 0, 'defun with spaced parens executes');
+    is($out, "hello world\n", 'defun spaced parens semantics');
+}
+
+# defun hello a b do — bare params
+{
+    my ($status, $out) = run_sup(<<'SUP');
+defun greet name greeting do
+  return concat(greeting, name)
+end
+print(greet("world", "hello "))
+SUP
+    is($status, 0, 'defun with bare params executes');
+    is($out, "hello world\n", 'defun bare params semantics');
+}
+
+# paren arglist splicing: print (a, b) splices
+{
+    my ($status, $out) = run_sup(<<'SUP');
+print (2, 3)
+SUP
+    is($status, 0, 'space rule: paren arglist splice executes');
+    is($out, "23\n", 'space rule: (a, b) spliced as two args');
+}
+
+# call with nested function arg kept together
+{
+    my ($status, $out) = run_sup(<<'SUP');
+let n = 3
+print add(n, 2) 5
+SUP
+    is($status, 0, 'space rule: nested call kept together');
+    is($out, "55\n", 'space rule: add(n,2) as one arg, 5 as another');
 }
 
 {
