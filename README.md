@@ -23,8 +23,8 @@ Target syntax direction:
 - `fun` for anonymous functions
 
 Status note:
-- Perl runtime accepts `def`, `let`, and `defun` (with `sub`/`defn` compatibility).
-- Perl runtime accepts `fun(...)` (with `fn(...)` compatibility).
+- Perl runtime accepts `def`, `let`, and `defun` (`defn` removed).
+- Perl runtime accepts `fun(...)` (`fn(...)` removed).
 - Full immutability semantics migration is still in progress.
 
 ## Globals vs Locals

@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
-use Test::More tests => 56;
+use Test::More tests => 60;
 use File::Temp qw(tempfile tempdir);
 use FindBin qw($Bin);
 use File::Spec;
@@ -50,6 +50,26 @@ print(bump(9))
 SLUP
     is($status, 0, 'def/let/defun aliases execute');
     is($out, "6\n10\n", 'def/let/defun aliases output');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+defn nope($x)
+  return($x)
+end
+SLUP
+    ok($status != 0, 'defn keyword is rejected');
+    like($out, qr/Syntax error/, 'defn rejection is explicit');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+set @xs = [1, 2]
+set @ys = map(@xs, fn($x -> add($x, 1)))
+print(len(@ys))
+SLUP
+    ok($status != 0, 'fn keyword is rejected');
+    like($out, qr/Cannot evaluate expression/, 'fn rejection is explicit');
 }
 
 {

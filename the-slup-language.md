@@ -43,7 +43,7 @@ Supported expression forms:
 - dict literal: `{k: "v", "api-key": 1, $dyn_key: 2}`
 - function call: `add(1, 2)`
 - regex literal: `#"^abc"`
-- anonymous function: `{$x -> expr}` or `fun($x -> expr)` (`fn(...)` compatibility alias)
+- anonymous function: `{$x -> expr}` or `fun($x -> expr)`
 
 ## Statements
 
@@ -62,7 +62,7 @@ Supported expression forms:
 ## Functions
 
 - Non-recursive function: `sub name($a, $b) ... end`
-- Non-recursive function alias: `defun name($a, $b) ... end` (`defn` compatibility alias)
+- Non-recursive function alias: `defun name($a, $b) ... end`
 - Recursive function: `rec name($n) ... end`
 - Parameters are locals and must be lowercase.
 - `return(...)` is only valid inside a function.
@@ -147,4 +147,4 @@ end
 - Unknown function call is an error.
 - In strict globals mode, undeclared global reads/writes are errors.
 - Builtins include text/array/dict/file/path/date/time/system helpers and process helpers (`run`, `pipe`, `sh`).
-- Runtime note: Perl runtime supports `fun(...)`, `fn(...)`, and `{$x -> ...}` lambda forms.
+- Runtime note: Perl runtime supports `fun(...)` and `{$x -> ...}` lambda forms.

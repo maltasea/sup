@@ -1822,7 +1822,7 @@ sub eval_expr {
     if ($expr =~ /^($SYMBOL_NAME_RE(?:\/$SYMBOL_NAME_RE)?)\s*\((.*)?\)\s*$/) {
         my $fname = $1;
         my $raw_args = $2 // '';
-        if ($fname eq 'fun' || $fname eq 'fn') {
+        if ($fname eq 'fun') {
             return parse_lambda_expr($raw_args, 'fun');
         }
         my @args = parse_arglist($raw_args);
@@ -2109,7 +2109,7 @@ sub compile_block {
             next;
         }
 
-        if ($line =~ /^(rec|sub|defun|defn)\s+($SYMBOL_NAME_RE)\s*\(([^)]*)\)$/) {
+        if ($line =~ /^(rec|sub|defun)\s+($SYMBOL_NAME_RE)\s*\(([^)]*)\)$/) {
             my $start_line = $i + 1;
             my $kind = $1;
             my $name = $2;
