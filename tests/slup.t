@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
-use Test::More tests => 32;
+use Test::More tests => 46;
 use File::Temp qw(tempfile tempdir);
 use FindBin qw($Bin);
 use File::Spec;
@@ -65,6 +65,98 @@ print(find-blue())
 SLUP
     is($status, 0, 'return(...) propagates through nested blocks');
     is($out, "blue\n", 'nested return value is preserved');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+unless eq("a", "b")
+  print("x")
+else
+  print("y")
+end
+SLUP
+    is($status, 0, 'unless executes then-branch when condition is false');
+    is($out, "x\n", 'unless false condition output');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+unless eq("a", "a")
+  print("x")
+else
+  print("y")
+end
+SLUP
+    is($status, 0, 'unless executes else-branch when condition is true');
+    is($out, "y\n", 'unless true condition output');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+sub count-down($n)
+  if lt($n, 1)
+    return(0)
+  end
+  return(add(1, count-down(sub($n, 1))))
+end
+print(count-down(3))
+SLUP
+    ok($status != 0, 'sub recursion is rejected by default');
+    like($out, qr/recursion is not allowed for sub 'count-down'/, 'sub recursion error explains rec requirement');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+rec count-down($n)
+  if lt($n, 1)
+    return(0)
+  end
+  return(add(1, count-down(sub($n, 1))))
+end
+print(count-down(3))
+SLUP
+    is($status, 0, 'rec allows direct recursion');
+    is($out, "3\n", 'rec direct recursion computes expected result');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+sub a($n)
+  if lt($n, 1)
+    return(0)
+  end
+  return(b(sub($n, 1)))
+end
+sub b($n)
+  if lt($n, 1)
+    return(0)
+  end
+  return(a(sub($n, 1)))
+end
+print(a(2))
+SLUP
+    ok($status != 0, 'mutual recursion is rejected for non-rec functions');
+    like($out, qr/recursion is not allowed for sub 'a'/, 'mutual recursion error points at recursive target');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+rec a($n)
+  if lt($n, 1)
+    return(0)
+  end
+  return(b(sub($n, 1)))
+end
+rec b($n)
+  if lt($n, 1)
+    return(0)
+  end
+  return(a(sub($n, 1)))
+end
+print(a(2))
+SLUP
+    is($status, 0, 'mutual recursion is allowed for rec functions');
+    is($out, "0\n", 'mutual rec recursion can terminate via base case');
 }
 
 {
@@ -215,6 +307,15 @@ if eq("a", "a")
 SLUP
     ok($status != 0, 'missing end in if fails');
     like($out, qr/if without matching end/, 'missing if end has clear error');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+unless eq("a", "a")
+  print("x")
+SLUP
+    ok($status != 0, 'missing end in unless fails');
+    like($out, qr/unless without matching end/, 'missing unless end has clear error');
 }
 
 {

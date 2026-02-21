@@ -22,10 +22,16 @@ my %module_arrays = ($MAIN_MODULE => {});
 my %module_dicts  = ($MAIN_MODULE => {});
 my %module_subs   = ($MAIN_MODULE => {}); # name => { params => [...], body => [...] }
 my %module_dirs   = ($MAIN_MODULE => '.');
+my %loaded_module_paths;
+my %module_loading_paths;
+my @module_load_stack;
+my %module_source_paths;
 my $MODULE_NAME_RE = qr/[A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)*/;
 my $SYMBOL_NAME_RE = qr/[A-Za-z_][A-Za-z0-9_]*(?:(?:->|-|\?)[A-Za-z0-9_]+)*\??/;
 our $call_depth = 0;
 our $returning = 0;
+our $active_line_no;
+our @call_stack;
 
 # --- Built-in function registry ---
 my %builtins = (
@@ -151,6 +157,14 @@ my %builtins = (
         close $fh;
         return $content;
     },
+    'append-file' => sub {
+        my ($text, $path) = @_;
+        die "append-file: missing path\n" unless defined $path && $path ne '';
+        open my $fh, '>>', $path or die "append-file: cannot open '$path': $!\n";
+        print $fh ($text // '');
+        close $fh;
+        return $path;
+    },
     'write-lines-file' => sub {
         my ($arr, $path) = @_;
         die "write-lines-file: first argument must be an array\n" unless ref $arr eq 'ARRAY';
@@ -180,22 +194,43 @@ my %builtins = (
         my ($file) = @_;
         die "load: missing filename\n" unless defined $file && $file ne '';
         my $path = resolve_load_path($file);
+        my $abs_path = canonicalize_path($path);
+        if ($module_loading_paths{$abs_path}) {
+            die "load: cyclic dependency detected: " . format_load_cycle($abs_path) . "\n";
+        }
+        return $file if $loaded_module_paths{$abs_path};
+
         open my $fh, '<', $path or die "load: cannot open '$file': $!\n";
         chomp(my @lines = <$fh>);
         close $fh;
 
         my $module = module_name_from_file($path);
-        require File::Basename;
-        $module_dirs{$module} = File::Basename::dirname($path);
-        module_vars_ref($module);
-        module_var_frames_ref($module);
-        module_arrays_ref($module);
-        module_dicts_ref($module);
-        module_subs_ref($module);
+        if (exists $module_source_paths{$module} && $module_source_paths{$module} ne $abs_path) {
+            die "load: module name collision '$module' between '$module_source_paths{$module}' and '$abs_path'\n";
+        }
 
-        my $nodes = compile_program(\@lines);
-        local $current_module = $module;
-        run_lines($nodes);
+        $module_loading_paths{$abs_path} = 1;
+        push @module_load_stack, $abs_path;
+        my $ok = eval {
+            $module_source_paths{$module} = $abs_path;
+            require File::Basename;
+            $module_dirs{$module} = File::Basename::dirname($abs_path);
+            module_vars_ref($module);
+            module_var_frames_ref($module);
+            module_arrays_ref($module);
+            module_dicts_ref($module);
+            module_subs_ref($module);
+
+            my $nodes = compile_program(\@lines);
+            local $current_module = $module;
+            run_lines($nodes);
+            1;
+        };
+        my $err = $@;
+        pop @module_load_stack;
+        delete $module_loading_paths{$abs_path};
+        die $err unless $ok;
+        $loaded_module_paths{$abs_path} = 1;
         return $file;
     },
     'user-input' => sub {
@@ -209,9 +244,18 @@ my %builtins = (
         my ($msg) = @_;
         die(($msg // 'died') . "\n");
     },
+    'stderr' => sub {
+        my @parts = @_;
+        my $out = join('', map { $_ // '' } @parts);
+        print STDERR $out, "\n";
+        return $out;
+    },
     'sh' => sub {
-        my ($cmd) = @_;
+        my ($cmd, $allow_unsafe) = @_;
         die "sh: missing command\n" unless defined $cmd && $cmd ne '';
+        if (!$allow_unsafe && $cmd =~ /[|&;<>`\$\\\n]/) {
+            die "sh: unsafe shell metacharacters detected; use run()/pipe() or pass 1 as second arg to override\n";
+        }
         my $out = `$cmd`;
         die "sh: failed to execute '$cmd': $!\n" if $? == -1;
         if ($? & 127) {
@@ -258,7 +302,57 @@ my %builtins = (
         close $fh;
         return $path;
     },
+    'rm' => sub {
+        my ($path) = @_;
+        die "rm: missing path\n" unless defined $path && $path ne '';
+        unlink $path or die "rm: cannot remove '$path': $!\n";
+        return $path;
+    },
+    'cwd' => sub {
+        require Cwd;
+        return Cwd::getcwd();
+    },
+    'chdir' => sub {
+        my ($dir) = @_;
+        die "chdir: missing directory\n" unless defined $dir && $dir ne '';
+        CORE::chdir($dir) or die "chdir: cannot change directory to '$dir': $!\n";
+        return $dir;
+    },
+    'path-join' => sub {
+        die "path-join: expected at least one segment\n" unless @_;
+        return File::Spec->catfile(map { defined $_ ? "$_" : '' } @_);
+    },
 );
+
+# Directional and namespaced aliases (keep old names for compatibility)
+$builtins{'text->len'}   = $builtins{'length'};
+$builtins{'text->upper'} = $builtins{'upper'};
+$builtins{'text->lower'} = $builtins{'lower'};
+
+$builtins{'array->len'}  = $builtins{'len'};
+$builtins{'array->get'}  = $builtins{'get'};
+$builtins{'array->push'} = $builtins{'push'};
+$builtins{'array->pop'}  = $builtins{'pop'};
+
+$builtins{'dict->get'}   = $builtins{'dict-get'};
+$builtins{'dict->set'}   = $builtins{'dict-set'};
+$builtins{'dict->keys'}  = $builtins{'dict-keys'};
+$builtins{'dict->has'}   = $builtins{'dict-has'};
+$builtins{'dict->del'}   = $builtins{'dict-del'};
+
+$builtins{'dir->exists'} = $builtins{'dir-exists'};
+$builtins{'dir->entries'} = $builtins{'read-dir'};
+$builtins{'file->exists'} = $builtins{'file-exists'};
+$builtins{'dir->cwd'} = $builtins{'cwd'};
+$builtins{'dir->chdir'} = $builtins{'chdir'};
+$builtins{'path->join'} = $builtins{'path-join'};
+
+$builtins{'file->text'}  = $builtins{'read-file'};
+$builtins{'text->file'}  = $builtins{'write-file'};
+$builtins{'file->append'} = $builtins{'append-file'};
+$builtins{'file->lines'} = $builtins{'read-file-lines'};
+$builtins{'lines->file'} = $builtins{'write-lines-file'};
+$builtins{'file->remove'} = $builtins{'rm'};
 
 # ============================================================
 #  Module helpers
@@ -353,6 +447,29 @@ sub resolve_load_path {
         return $candidate if -f $candidate;
     }
     return $file;
+}
+
+sub canonicalize_path {
+    my ($path) = @_;
+    my $abs = File::Spec->rel2abs($path);
+    eval {
+        require Cwd;
+        my $real = Cwd::abs_path($abs);
+        $abs = $real if defined $real;
+        1;
+    };
+    return $abs;
+}
+
+sub format_load_cycle {
+    my ($next_abs_path) = @_;
+    return join(' -> ', @module_load_stack, $next_abs_path);
+}
+
+sub with_line_context {
+    my ($msg) = @_;
+    chomp $msg;
+    return defined $active_line_no ? "line $active_line_no: $msg\n" : "$msg\n";
 }
 
 sub resolve_sub_target {
@@ -1020,28 +1137,43 @@ sub eval_expr {
         my ($target_module, $sub_name) = resolve_sub_target($fname);
         if (defined $target_module) {
             my $sub = module_subs_ref($target_module)->{$sub_name};
+            my $call_id = "$target_module/$sub_name";
+            if (grep { $_ eq $call_id } @call_stack) {
+                die with_line_context("recursion is not allowed for sub '$sub_name'; declare it with rec")
+                    unless $sub->{recursive};
+            }
             my $frames = module_var_frames_ref($target_module);
             push @$frames, {};
+            push @call_stack, $call_id;
             my $frame = $frames->[-1];
-            local $call_depth = $call_depth + 1;
-            local $returning = 0;
-            local $current_module = $target_module;
-            for my $idx (0 .. $#{$sub->{params}}) {
-                $frame->{$sub->{params}[$idx]} = $evaled[$idx];
-            }
-            delete $frame->{'_return'};
-            my $body = $sub->{body_nodes} // $sub->{body} // [];
-            run_lines($body);
-            my $ret = $frame->{'_return'};
+            my $ret;
+            my $ok = eval {
+                local $call_depth = $call_depth + 1;
+                local $returning = 0;
+                local $current_module = $target_module;
+                for my $idx (0 .. $#{$sub->{params}}) {
+                    $frame->{$sub->{params}[$idx]} = $evaled[$idx];
+                }
+                delete $frame->{'_return'};
+                my $body = $sub->{body_nodes} // $sub->{body} // [];
+                run_lines($body);
+                $ret = $frame->{'_return'};
+                1;
+            };
+            my $err = $@;
+            pop @call_stack;
             pop @$frames;
+            die $err unless $ok;
             return $ret;
         }
 
-        die "Unknown function: $fname\n" unless exists $builtins{$fname};
-        return $builtins{$fname}->(@evaled);
+        die with_line_context("Unknown function: $fname") unless exists $builtins{$fname};
+        my $result = eval { $builtins{$fname}->(@evaled) };
+        return $result unless $@;
+        die with_line_context($@);
     }
 
-    die "Cannot evaluate expression: '$expr'\n";
+    die with_line_context("Cannot evaluate expression: '$expr'");
 }
 
 # Split a comma-separated argument list, respecting parentheses and quotes
@@ -1215,10 +1347,37 @@ sub compile_block {
             next;
         }
 
-        if ($line =~ /^sub\s+($SYMBOL_NAME_RE)\s*\(([^)]*)\)$/) {
+        if ($line =~ /^unless\s+(.+)$/) {
             my $start_line = $i + 1;
-            my $name = $1;
-            my $raw_params = $2 // '';
+            my $cond = $1;
+            my ($true_nodes, $next_i, $term) = compile_block($lines_ref, $i + 1, 1);
+            die "unless without matching end on line $start_line\n" unless defined $term;
+            my $false_nodes = [];
+            if ($term eq 'else') {
+                my ($f_nodes, $after_false, $term2) = compile_block($lines_ref, $next_i, 0);
+                die "unless without matching end on line $start_line\n" unless defined $term2 && $term2 eq 'end';
+                $false_nodes = $f_nodes;
+                $i = $after_false;
+            } elsif ($term eq 'end') {
+                $i = $next_i;
+            } else {
+                die "unless without matching end on line $start_line\n";
+            }
+            push @nodes, {
+                kind => 'unless',
+                line => $start_line,
+                cond => $cond,
+                true_body => $true_nodes,
+                false_body => $false_nodes,
+            };
+            next;
+        }
+
+        if ($line =~ /^(rec|sub)\s+($SYMBOL_NAME_RE)\s*\(([^)]*)\)$/) {
+            my $start_line = $i + 1;
+            my $kind = $1;
+            my $name = $2;
+            my $raw_params = $3 // '';
             my @params = grep { $_ ne '' } map {
                 my $p = $_;
                 $p =~ s/^\s*\$//;
@@ -1230,13 +1389,14 @@ sub compile_block {
             } split /,/, $raw_params;
 
             my ($body_nodes, $next_i, $term) = compile_block($lines_ref, $i + 1, 0);
-            die "sub without matching end on line $start_line\n" unless defined $term && $term eq 'end';
+            die "$kind without matching end on line $start_line\n" unless defined $term && $term eq 'end';
             push @nodes, {
                 kind => 'sub_def',
                 line => $start_line,
                 name => $name,
                 params => \@params,
                 body => $body_nodes,
+                recursive => ($kind eq 'rec' ? 1 : 0),
             };
             $i = $next_i;
             next;
@@ -1306,6 +1466,7 @@ sub exec_node {
     my ($node) = @_;
     my $line_no = $node->{line};
     my $kind = $node->{kind};
+    local $active_line_no = $line_no;
 
     if ($kind eq 'global_decl') {
         my $where = "line $line_no";
@@ -1387,10 +1548,22 @@ sub exec_node {
         return;
     }
 
+    if ($kind eq 'unless') {
+        my $cond = eval_expr($node->{cond});
+        my $truthy = $cond && $cond ne '0' && $cond ne '';
+        if (!$truthy) {
+            run_lines($node->{true_body});
+        } else {
+            run_lines($node->{false_body});
+        }
+        return;
+    }
+
     if ($kind eq 'sub_def') {
         module_subs_ref($current_module)->{$node->{name}} = {
             params => $node->{params},
             body => $node->{body},
+            recursive => $node->{recursive} ? 1 : 0,
         };
         return;
     }

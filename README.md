@@ -46,6 +46,27 @@ Declaration modifiers:
 - `required`
 - `default(<expr>)`
 
+## Recursion
+
+Function recursion must be explicit:
+- `sub name(...)` defines a non-recursive function
+- `rec name(...)` defines a recursive function
+
+Examples:
+
+```slup
+sub add1($x)
+  return(add($x, 1))
+end
+
+rec fact($n)
+  if lt($n, 2)
+    return(1)
+  end
+  return(mul($n, fact(sub($n, 1))))
+end
+```
+
 ## Static Checking
 
 Use static mode to verify global declarations/assignments without executing the script:
@@ -91,6 +112,11 @@ Load modules:
 load("moda")
 ```
 
+`load()` behavior:
+- modules are executed once per resolved file path (subsequent `load(...)` calls reuse loaded module state)
+- cyclic loads fail fast with a clear dependency chain
+- loading two different files with the same module basename (for example two `alpha.slup` files) fails with a module-name collision error
+
 Module-local symbols are namespaced:
 - function call: `moda/who("x")`
 - variable read: `$moda/value`
@@ -123,6 +149,23 @@ Both return a dict:
 - `code` (exit status; for pipelines, the last command)
 - `out` (captured stdout)
 - `err` (captured stderr)
+
+`sh(cmd)` remains available for shell-string commands, but by default rejects shell metacharacters.
+- For shell metacharacters, prefer `run(...)` or `pipe(...)`.
+- If you intentionally need shell metacharacters, pass an explicit override: `sh("echo ok | cat", 1)`.
+
+Use `stderr(...)` for explicit stderr output.
+
+## API Naming
+
+Preferred built-in names use directional/style-consistent aliases:
+- text: `text->len`, `text->upper`, `text->lower`
+- arrays: `array->len`, `array->get`, `array->push`, `array->pop`
+- dicts: `dict->get`, `dict->set`, `dict->keys`, `dict->has`, `dict->del`
+- files/dirs: `file->text`, `text->file`, `file->append`, `file->lines`, `lines->file`, `file->exists`, `file->remove`, `dir->exists`, `dir->entries`, `dir->cwd`, `dir->chdir`
+- paths: `path->join`
+
+Legacy names remain supported for compatibility.
 
 ## Tests
 
