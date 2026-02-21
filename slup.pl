@@ -834,7 +834,7 @@ sub static_scan_file {
             next;
         }
 
-        if ($line =~ /^set\s+\$($SYMBOL_NAME_RE)\s*=\s*(.+)$/) {
+        if ($line =~ /^(?:set|def|let)\s+\$($SYMBOL_NAME_RE)\s*=\s*(.+)$/) {
             my $name = $1;
             my $where = "$path:" . ($i + 1);
             if (is_global_name($name)) {
@@ -1828,7 +1828,7 @@ sub compile_block {
             next;
         }
 
-        if ($line =~ /^set\s+\$($SYMBOL_NAME_RE)\s*=\s*(.+)$/) {
+        if ($line =~ /^(?:set|def|let)\s+\$($SYMBOL_NAME_RE)\s*=\s*(.+)$/) {
             push @nodes, {
                 kind => 'set_scalar',
                 line => $i + 1,
@@ -1850,7 +1850,7 @@ sub compile_block {
             next;
         }
 
-        if ($line =~ /^set\s+\@($SYMBOL_NAME_RE)\s*=\s*(.+)$/) {
+        if ($line =~ /^(?:set|def|let)\s+\@($SYMBOL_NAME_RE)\s*=\s*(.+)$/) {
             push @nodes, {
                 kind => 'set_array',
                 line => $i + 1,
@@ -1861,7 +1861,7 @@ sub compile_block {
             next;
         }
 
-        if ($line =~ /^set\s+\%($SYMBOL_NAME_RE)\s*=\s*(.+)$/) {
+        if ($line =~ /^(?:set|def|let)\s+\%($SYMBOL_NAME_RE)\s*=\s*(.+)$/) {
             push @nodes, {
                 kind => 'set_dict',
                 line => $i + 1,
@@ -1960,7 +1960,7 @@ sub compile_block {
             next;
         }
 
-        if ($line =~ /^(rec|sub)\s+($SYMBOL_NAME_RE)\s*\(([^)]*)\)$/) {
+        if ($line =~ /^(rec|sub|defn)\s+($SYMBOL_NAME_RE)\s*\(([^)]*)\)$/) {
             my $start_line = $i + 1;
             my $kind = $1;
             my $name = $2;

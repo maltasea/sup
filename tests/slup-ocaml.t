@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
-use Test::More tests => 141;
+use Test::More tests => 145;
 use File::Path qw(make_path);
 use File::Temp qw(tempfile tempdir);
 use FindBin qw($Bin);
@@ -88,6 +88,31 @@ print($sum)
 SLUP
     is($status, 0, 'basic arithmetic exits successfully (ocaml)');
     is($out, "5\n", 'basic arithmetic output (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+def $base = 5
+let $next = add($base, 1)
+defn bump($x)
+  return(add($x, 1))
+end
+print($next)
+print(bump(9))
+SLUP
+    is($status, 0, 'def/let/defn aliases execute (ocaml)');
+    is($out, "6\n10\n", 'def/let/defn aliases output (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+set @xs = [1, 2, 3]
+set @ys = map(@xs, fn($x -> add($x, 1)))
+print(get(@ys, 0))
+print(get(@ys, 2))
+SLUP
+    is($status, 0, 'fn(...) lambda alias executes (ocaml)');
+    is($out, "2\n4\n", 'fn(...) lambda alias output (ocaml)');
 }
 
 {

@@ -1,6 +1,6 @@
 # The slup Language
 
-This document describes the current slup language syntax and runtime behavior.
+This document describes implemented slup syntax plus in-progress syntax aliases.
 
 ## Program Model
 
@@ -43,13 +43,17 @@ Supported expression forms:
 - dict literal: `{k: "v", "api-key": 1, $dyn_key: 2}`
 - function call: `add(1, 2)`
 - regex literal: `#"^abc"`
+- anonymous function (OCaml runtime): `{$x -> expr}` or `fn($x -> expr)`
 
 ## Statements
 
 - Local assignment: `set $x = expr`
+- Local assignment aliases: `def $x = expr`, `let $x = expr`
 - Global assignment: `$X = expr`
 - Array assignment: `set @xs = expr`
+- Array assignment aliases: `def @xs = expr`, `let @xs = expr`
 - Dict assignment: `set %d = expr`
+- Dict assignment aliases: `def %d = expr`, `let %d = expr`
 - Return: `return(expr)` or `return()`
 - Function call statement: `print("ok")`
 - Global declaration: `global $DB_HOST required`
@@ -58,6 +62,7 @@ Supported expression forms:
 ## Functions
 
 - Non-recursive function: `sub name($a, $b) ... end`
+- Non-recursive function alias: `defn name($a, $b) ... end`
 - Recursive function: `rec name($n) ... end`
 - Parameters are locals and must be lowercase.
 - `return(...)` is only valid inside a function.
@@ -142,4 +147,4 @@ end
 - Unknown function call is an error.
 - In strict globals mode, undeclared global reads/writes are errors.
 - Builtins include text/array/dict/file/path/date/time/system helpers and process helpers (`run`, `pipe`, `sh`).
-
+- Runtime parity note: `fn(...)` is currently OCaml-only; Perl parity is pending.

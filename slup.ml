@@ -320,11 +320,11 @@ let returning = ref false
    ============================================================ *)
 
 let re_set_var =
-  Str.regexp {|^set[ 	]+\$\([^ 	=]+\)[ 	]*=[ 	]*\(.*\)$|}
+  Str.regexp {|^\(set\|def\|let\)[ 	]+\$\([^ 	=]+\)[ 	]*=[ 	]*\(.*\)$|}
 let re_set_arr =
-  Str.regexp {|^set[ 	]+@\([^ 	=]+\)[ 	]*=[ 	]*\(.*\)$|}
+  Str.regexp {|^\(set\|def\|let\)[ 	]+@\([^ 	=]+\)[ 	]*=[ 	]*\(.*\)$|}
 let re_set_dict =
-  Str.regexp {|^set[ 	]+%\([^ 	=]+\)[ 	]*=[ 	]*\(.*\)$|}
+  Str.regexp {|^\(set\|def\|let\)[ 	]+%\([^ 	=]+\)[ 	]*=[ 	]*\(.*\)$|}
 let re_global_set =
   Str.regexp {|^\$\([^ 	=]+\)[ 	]*=[ 	]*\(.*\)$|}
 let re_global_decl =
@@ -336,7 +336,7 @@ let re_while = Str.regexp {|^while[ 	]+\(.*\)$|}
 let re_switch = Str.regexp {|^switch[ 	]+\(.*\)$|}
 let re_case = Str.regexp {|^case[ 	]+\(.*\)$|}
 let re_sub_def =
-  Str.regexp {|^\(rec\|sub\)[ 	]+\([^ 	(]+\)[ 	]*(\([^)]*\))[ 	]*$|}
+  Str.regexp {|^\(rec\|sub\|defn\)[ 	]+\([^ 	(]+\)[ 	]*(\([^)]*\))[ 	]*$|}
 let re_alias =
   Str.regexp
     {|^alias[ 	]+\([^ 	=]+\)[ 	]*=[ 	]*\([^ 	]+\)[ 	]*$|}
@@ -832,7 +832,7 @@ let rec static_scan_file path state =
           else
             Hashtbl.replace state.assigned name true
         end else if re_matches re_set_var line then begin
-          let name = Str.matched_group 1 line in
+          let name = Str.matched_group 2 line in
           if is_global_name name then
             Hashtbl.replace state.assigned name true
           else if not (is_local_name name) then
@@ -998,6 +998,34 @@ let parse_prefixed_symbol expr prefix =
   else
     None
 
+let find_top_level_arrow s =
+  let len = String.length s in
+  let depth = ref 0 in
+  let in_quote = ref false in
+  let escaped = ref false in
+  let found = ref None in
+  let i = ref 0 in
+  while !i < len - 1 && !found = None do
+    let ch = s.[!i] in
+    if !in_quote then begin
+      if !escaped then
+        escaped := false
+      else if ch = '\\' then
+        escaped := true
+      else if ch = '"' then
+        in_quote := false
+    end else if ch = '"' then
+      in_quote := true
+    else begin
+      if ch = '(' || ch = '[' || ch = '{' then incr depth
+      else if ch = ')' || ch = ']' || ch = '}' then decr depth
+      else if !depth = 0 && ch = '-' && s.[!i + 1] = '>' then
+        found := Some !i
+    end;
+    incr i
+  done;
+  !found
+
 let rec compile_expr raw_expr =
   let expr = String.trim raw_expr in
   if is_string_literal expr then
@@ -1040,44 +1068,30 @@ let rec compile_expr raw_expr =
     EArrayLit (List.map compile_expr items)
   else if String.length expr >= 2 && expr.[0] = '{' && expr.[String.length expr - 1] = '}' then
     let inner = String.sub expr 1 (String.length expr - 2) in
-    (* Check for lambda: {$x -> body} or {$a, $b -> body} *)
-    let is_lambda =
-      let trimmed = String.trim inner in
-      String.length trimmed > 0 && trimmed.[0] = '$' &&
-      let len = String.length trimmed in
-      let rec scan i depth =
-        if i > len - 2 then false
-        else if trimmed.[i] = '(' then scan (i + 1) (depth + 1)
-        else if trimmed.[i] = ')' then scan (i + 1) (depth - 1)
-        else if depth = 0 && trimmed.[i] = '-' && trimmed.[i + 1] = '>' then true
-        else scan (i + 1) depth
-      in
-      scan 0 0
-    in
-    if is_lambda then begin
-      let trimmed = String.trim inner in
-      let len = String.length trimmed in
-      let arrow_pos =
-        let rec scan i depth =
-          if i > len - 2 then failwith "lambda: missing ->"
-          else if trimmed.[i] = '(' then scan (i + 1) (depth + 1)
-          else if trimmed.[i] = ')' then scan (i + 1) (depth - 1)
-          else if depth = 0 && trimmed.[i] = '-' && trimmed.[i + 1] = '>' then i
-          else scan (i + 1) depth
+    let trimmed = String.trim inner in
+    if String.length trimmed > 0 && trimmed.[0] = '$' then begin
+      match find_top_level_arrow trimmed with
+      | Some _ ->
+        compile_lambda_expr trimmed
+      | None ->
+        let items =
+          List.map (fun pair ->
+            let pair = String.trim pair in
+            match split_dict_pair pair with
+            | None -> failwith ("Bad dict entry: '" ^ pair ^ "'")
+            | Some (kexpr, vexpr) ->
+              let kexpr = String.trim kexpr in
+              let vexpr = String.trim vexpr in
+              let key =
+                if is_symbol_name kexpr then
+                  DictKeySymbol kexpr
+                else
+                  DictKeyExpr (compile_expr kexpr)
+              in
+              (key, compile_expr vexpr)
+          ) (parse_arglist inner)
         in
-        scan 0 0
-      in
-      let params_str = String.trim (String.sub trimmed 0 arrow_pos) in
-      let body_str = String.trim (String.sub trimmed (arrow_pos + 2) (len - arrow_pos - 2)) in
-      let param_parts = String.split_on_char ',' params_str in
-      let params = List.map (fun p ->
-        let p = String.trim p in
-        if String.length p > 1 && p.[0] = '$' then
-          String.sub p 1 (String.length p - 1)
-        else
-          failwith ("lambda: bad parameter '" ^ p ^ "'")
-      ) param_parts in
-      ELambda (params, compile_expr body_str)
+        EDictLit items
     end else begin
     let items =
       List.map (fun pair ->
@@ -1103,11 +1117,41 @@ let rec compile_expr raw_expr =
     ERegex (Pcre.regexp pat)
   else
     match parse_func_call expr with
+    | Some ("fn", raw_args) ->
+      compile_lambda_expr raw_args
     | Some (fname, raw_args) ->
       let args = parse_arglist raw_args in
       ECall (fname, List.map compile_expr args)
     | None ->
       failwith ("Cannot evaluate expression: '" ^ expr ^ "'")
+
+and compile_lambda_expr raw =
+  let trimmed = String.trim raw in
+  let len = String.length trimmed in
+  let arrow_pos =
+    match find_top_level_arrow trimmed with
+    | Some i -> i
+    | None -> failwith "fn: missing ->"
+  in
+  let params_str = String.trim (String.sub trimmed 0 arrow_pos) in
+  let body_str = String.trim (String.sub trimmed (arrow_pos + 2) (len - arrow_pos - 2)) in
+  let param_parts =
+    if params_str = "" then []
+    else String.split_on_char ',' params_str
+  in
+  if param_parts = [] then
+    failwith "fn: expected at least one parameter";
+  let params = List.map (fun p ->
+    let p = String.trim p in
+    if String.length p > 1 && p.[0] = '$' then
+      let name = String.sub p 1 (String.length p - 1) in
+      if not (is_local_name name) then
+        failwith ("fn: invalid parameter '$" ^ name ^ "' (locals must be lowercase)");
+      name
+    else
+      failwith ("fn: bad parameter '" ^ p ^ "'")
+  ) param_parts in
+  ELambda (params, compile_expr body_str)
 
 let rec compile_switch lines start switch_line =
   let len = Array.length lines in
@@ -1194,20 +1238,20 @@ and compile_block lines start allow_else allow_case =
         in
         loop (i + 1) (NGlobalDecl (i + 1, name, spec, default_expr) :: acc)
       else if re_matches re_set_var line then
-        let name = Str.matched_group 1 line in
-        let expr = Str.matched_group 2 line in
+        let name = Str.matched_group 2 line in
+        let expr = Str.matched_group 3 line in
         loop (i + 1) (NSetVar (i + 1, name, compile_expr expr) :: acc)
       else if re_matches re_global_set line then
         let name = Str.matched_group 1 line in
         let expr = Str.matched_group 2 line in
         loop (i + 1) (NGlobalSet (i + 1, name, compile_expr expr) :: acc)
       else if re_matches re_set_arr line then
-        let name = Str.matched_group 1 line in
-        let expr = Str.matched_group 2 line in
+        let name = Str.matched_group 2 line in
+        let expr = Str.matched_group 3 line in
         loop (i + 1) (NSetArr (i + 1, name, compile_expr expr) :: acc)
       else if re_matches re_set_dict line then
-        let name = Str.matched_group 1 line in
-        let expr = Str.matched_group 2 line in
+        let name = Str.matched_group 2 line in
+        let expr = Str.matched_group 3 line in
         loop (i + 1) (NSetDict (i + 1, name, compile_expr expr) :: acc)
       else if re_matches re_return line then
         let raw = Str.matched_group 1 line in

@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
-use Test::More tests => 52;
+use Test::More tests => 54;
 use File::Temp qw(tempfile tempdir);
 use FindBin qw($Bin);
 use File::Spec;
@@ -36,6 +36,20 @@ print($sum)
 SLUP
     is($status, 0, 'basic arithmetic exits successfully');
     is($out, "5\n", 'basic arithmetic output');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+def $base = 5
+let $next = add($base, 1)
+defn bump($x)
+  return(add($x, 1))
+end
+print($next)
+print(bump(9))
+SLUP
+    is($status, 0, 'def/let/defn aliases execute');
+    is($out, "6\n10\n", 'def/let/defn aliases output');
 }
 
 {

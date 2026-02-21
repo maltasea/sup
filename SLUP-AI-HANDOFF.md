@@ -12,6 +12,15 @@ This document captures implementation context for AI assistants working on the s
 
 Both interpreters should accept the same language. When adding features, implement in both and verify with the shared test suite.
 
+## Syntax Direction (Current + In Progress)
+
+- Accepted aliases in both runtimes:
+  - `def` / `let` for assignment forms currently parsed alongside `set`
+  - `defn` parsed alongside `sub`
+- In progress:
+  - full `def`/`let` immutability semantics
+  - `fn(...)` parity in Perl runtime (currently OCaml-only)
+
 ## Architecture (OCaml — `slup.ml`)
 
 Single-file interpreter (~3000 lines). Key sections in order:

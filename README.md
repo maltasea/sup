@@ -13,6 +13,20 @@ Execution model:
 - line-based parse (one line = one statement, except block constructs)
 - scripts/modules are compiled into a simple AST before execution
 
+## Syntax Direction (Planned)
+
+Target syntax direction:
+- `def` for immutable top-level/module bindings
+- `let` for immutable local short-lived bindings
+- `set` as the only mutating form (updates existing bindings)
+- `defn` for named function definitions
+- `fn` for anonymous functions
+
+Status note:
+- `def`, `let`, and `defn` are now accepted syntax aliases in both runtimes.
+- `fn(...)` is currently implemented in OCaml; Perl runtime parity is still pending.
+- Full immutability semantics migration is still in progress.
+
 ## Globals vs Locals
 
 Name rules:
@@ -66,6 +80,10 @@ rec fact($n)
   return(mul($n, fact(sub($n, 1))))
 end
 ```
+
+Planned naming direction:
+- `sub` remains supported, with `defn` now accepted as alias.
+- anonymous function syntax is moving toward `fn`.
 
 ## Static Checking
 
