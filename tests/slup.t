@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
-use Test::More tests => 70;
+use Test::More tests => 72;
 use File::Temp qw(tempfile tempdir);
 use FindBin qw($Bin);
 use File::Spec;
@@ -93,6 +93,17 @@ print(t)
 SLUP
     is($status, 0, 'light regex forms execute');
     is($out, "1\n1\nbaNANAs\n", 'light regex operators and substitution');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+set $s = "bananas"
+print(replace($s, #"na", "NA"))
+print(replace-all($s, #"na", "NA"))
+print(text->replace-all($s, #"na", "XO"))
+SLUP
+    is($status, 0, 'replace and replace-all helpers execute');
+    is($out, "baNAnas\nbaNANAs\nbaXOXOs\n", 'replace helpers perform single/global substitution');
 }
 
 {

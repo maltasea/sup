@@ -24,7 +24,7 @@ This maps Perl function families to Slup for a shell-first language.
 - Shell compatibility:
   - `pwd`, `cd`, `true`, `false`, `sleep`, `umask`, `times`, `kill`, `wait`
 - String/array/dict basics:
-  - `text->len`, `text->upper`, `text->lower`
+  - `text->len`, `text->upper`, `text->lower`, `text->replace`, `text->replace-all`
   - `array->len`, `array->get`, `array->push`, `array->pop`
   - `dict->get`, `dict->set`, `dict->keys`, `dict->has`, `dict->del`
 

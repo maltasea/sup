@@ -1,0 +1,74 @@
+# PLEAC TODO (Perl Focus, Post-Syntax Migration)
+
+Date: 2026-02-21
+
+## Current State
+
+- Shelm-light syntax migration is done.
+- Active track now is PLEAC everyday capability gaps.
+- Priority chapters remain:
+  - Chapter 1 (`Strings`)
+  - Chapter 7 (`File_Access`)
+
+## Scope Rules
+
+In scope:
+- Missing runtime capabilities in `slup.pl` used by everyday scripts.
+
+Out of scope:
+- Missing Perl module dependencies in PLEAC snippets.
+- Reference-required sections (SLUP has no reference model):
+  - `pleac/Chapter_11_References_and_Records/Section_11.4`
+  - `pleac/Chapter_11_References_and_Records/Section_11.5`
+  - `pleac/Chapter_11_References_and_Records/Section_11.6`
+  - `pleac/Chapter_11_References_and_Records/Section_11.7`
+  - `pleac/Chapter_11_References_and_Records/Section_11.8`
+  - `pleac/Chapter_11_References_and_Records/Section_11.11`
+
+## Guardrails (Do Not Break Interpreter)
+
+1. Keep parser changes out unless strictly required.
+2. Land one small feature per change.
+3. Update tests in the same change.
+4. Prefer small runtime helpers over deep runtime rewrites.
+5. If regression risk appears, stop and report before continuing.
+
+## Backlog Order
+
+Phase A (highest value, low risk):
+1. Chapter 1 substitution helpers
+   - `replace(text, rx, repl)`
+   - `replace-all(text, rx, repl)`
+2. Chapter 1 text cleanup helpers
+   - `trim`, `ltrim`, `rtrim`
+   - `indent`, `dedent`, `wrap`
+3. Chapter 7 safe file workflow helpers
+   - temp file/dir helper(s)
+   - atomic write helper
+
+Phase B (medium risk):
+1. Chapter 7 lock helper abstraction
+2. Chapter 7 glob/walk convenience helper
+
+Phase C (defer unless clearly needed):
+1. fd dup/redirection model
+2. nonblocking/select wrappers
+3. pack/unpack compatibility layer
+
+## Work Pattern Per Item
+
+1. Add helper in `slup.pl`.
+2. Add focused tests.
+3. Run checks:
+   - `perl -c slup.pl`
+   - `./tests/run-tests.sh`
+4. Only if Perl-side behavior is stable, consider OCaml parity later.
+
+## Success Condition
+
+Each PLEAC blocker should end up labeled as one of:
+- `missing_slup_feature`
+- `snippet_noise`
+- `out_of_scope`
+
+Only `missing_slup_feature` items should drive implementation.

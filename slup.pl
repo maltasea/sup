@@ -44,6 +44,33 @@ our @call_stack;
 our %active_calls;
 my %sys_capabilities;
 
+sub run_regex_substitute {
+    my ($text, $pattern, $replacement, $flags, $name) = @_;
+    $text = '' unless defined $text;
+    $replacement = '' unless defined $replacement;
+    $flags //= '';
+    my $re;
+    if (ref($pattern) eq 'Regexp') {
+        $re = $pattern;
+    } else {
+        my $pat = defined($pattern) ? "$pattern" : '';
+        my $mods = '';
+        $mods .= 'i' if $flags =~ /i/;
+        $mods .= 'm' if $flags =~ /m/;
+        $mods .= 's' if $flags =~ /s/;
+        my $qr_pat = $mods ne '' ? "(?$mods:$pat)" : $pat;
+        $re = eval { qr/$qr_pat/ };
+        die "$name: invalid regex pattern\n" if $@;
+    }
+    my $out = "$text";
+    if ($flags =~ /g/) {
+        $out =~ s/$re/$replacement/g;
+    } else {
+        $out =~ s/$re/$replacement/;
+    }
+    return $out;
+}
+
 # --- Built-in function registry ---
 my %builtins = (
     'is-empty' => sub {
@@ -83,29 +110,15 @@ my %builtins = (
     },
     'rx-sub' => sub {
         my ($text, $pattern, $replacement, $flags) = @_;
-        $text = '' unless defined $text;
-        $replacement = '' unless defined $replacement;
-        $flags //= '';
-        my $re;
-        if (ref($pattern) eq 'Regexp') {
-            $re = $pattern;
-        } else {
-            my $pat = defined($pattern) ? "$pattern" : '';
-            my $mods = '';
-            $mods .= 'i' if $flags =~ /i/;
-            $mods .= 'm' if $flags =~ /m/;
-            $mods .= 's' if $flags =~ /s/;
-            my $qr_pat = $mods ne '' ? "(?$mods:$pat)" : $pat;
-            $re = eval { qr/$qr_pat/ };
-            die "rx-sub: invalid regex pattern\n" if $@;
-        }
-        my $out = "$text";
-        if ($flags =~ /g/) {
-            $out =~ s/$re/$replacement/g;
-        } else {
-            $out =~ s/$re/$replacement/;
-        }
-        return $out;
+        return run_regex_substitute($text, $pattern, $replacement, $flags, 'rx-sub');
+    },
+    'replace' => sub {
+        my ($text, $pattern, $replacement) = @_;
+        return run_regex_substitute($text, $pattern, $replacement, '', 'replace');
+    },
+    'replace-all' => sub {
+        my ($text, $pattern, $replacement) = @_;
+        return run_regex_substitute($text, $pattern, $replacement, 'g', 'replace-all');
     },
     'array'  => sub { return [@_] },
     'dict'   => sub {
@@ -541,6 +554,8 @@ my %builtins = (
 $builtins{'text->len'}   = $builtins{'length'};
 $builtins{'text->upper'} = $builtins{'upper'};
 $builtins{'text->lower'} = $builtins{'lower'};
+$builtins{'text->replace'} = $builtins{'replace'};
+$builtins{'text->replace-all'} = $builtins{'replace-all'};
 
 $builtins{'array->len'}  = $builtins{'len'};
 $builtins{'array->get'}  = $builtins{'get'};

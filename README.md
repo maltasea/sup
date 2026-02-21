@@ -189,7 +189,7 @@ Use `stderr(...)` for explicit stderr output.
 ## API Naming
 
 Preferred built-in names use directional/style-consistent aliases:
-- text: `text->len`, `text->upper`, `text->lower`
+- text: `text->len`, `text->upper`, `text->lower`, `text->replace`, `text->replace-all`
 - arrays: `array->len`, `array->get`, `array->push`, `array->pop`
 - dicts: `dict->get`, `dict->set`, `dict->keys`, `dict->has`, `dict->del`
 - files/dirs: `file->text`, `text->file`, `file->append`, `file->lines`, `lines->file`, `file->exists`, `file->remove`, `dir->exists`, `dir->entries`, `dir->cwd`, `dir->chdir`
