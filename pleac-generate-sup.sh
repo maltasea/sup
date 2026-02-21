@@ -3,8 +3,8 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 PLEAC_DIR="$ROOT/pleac"
-NOTES_FILE="$PLEAC_DIR/slup-notes.txt"
-TMP_DIR="/tmp/pleac-slup-pass.$$"
+NOTES_FILE="$PLEAC_DIR/sup-notes.txt"
+TMP_DIR="/tmp/pleac-sup-pass.$$"
 
 if [ ! -d "$PLEAC_DIR" ]; then
   echo "Missing directory: $PLEAC_DIR" >&2
@@ -47,16 +47,16 @@ while IFS= read -r section_dir; do
 
   perl_file="$section_dir/perl.pl"
   ocaml_file="$section_dir/ocaml.ml"
-  slup_file="$section_dir/slup.slup"
+  sup_file="$section_dir/sup.sup"
 
   ref_out="$TMP_DIR/ref.out"
   ref_err="$TMP_DIR/ref.err"
   ref_out_norm="$TMP_DIR/ref.out.norm"
   ref_err_norm="$TMP_DIR/ref.err.norm"
-  slup_out="$TMP_DIR/slup.out"
-  slup_err="$TMP_DIR/slup.err"
-  slup_out_norm="$TMP_DIR/slup.out.norm"
-  slup_err_norm="$TMP_DIR/slup.err.norm"
+  sup_out="$TMP_DIR/sup.out"
+  sup_err="$TMP_DIR/sup.err"
+  sup_out_norm="$TMP_DIR/sup.out.norm"
+  sup_err_norm="$TMP_DIR/sup.err.norm"
 
   ref_lang=""
   ref_runner=""
@@ -91,7 +91,7 @@ while IFS= read -r section_dir; do
     continue
   fi
 
-  cat > "$slup_file" <<EOF
+  cat > "$sup_file" <<EOF
 # Auto-generated wrapper for $section_rel ($ref_lang baseline)
 set %r = run(["$ref_runner", "$ref_target"])
 set \$out = dict-get(%r, "out")
@@ -104,20 +104,20 @@ unless is-empty(\$err)
 end
 EOF
 
-  run_with_timeout 3 "$slup_out" "$slup_err" perl "$ROOT/slup.pl" "$slup_file"
-  slup_status=$?
-  if [ "$slup_status" -ne 0 ]; then
-    append_note "$section_rel: slup wrapper failed (status=$slup_status, baseline=$ref_lang)"
+  run_with_timeout 3 "$sup_out" "$sup_err" perl "$ROOT/sup.pl" "$sup_file"
+  sup_status=$?
+  if [ "$sup_status" -ne 0 ]; then
+    append_note "$section_rel: sup wrapper failed (status=$sup_status, baseline=$ref_lang)"
     sections_noted=$((sections_noted + 1))
     continue
   fi
 
   normalize_stream "$ref_out" "$ref_out_norm"
   normalize_stream "$ref_err" "$ref_err_norm"
-  normalize_stream "$slup_out" "$slup_out_norm"
-  normalize_stream "$slup_err" "$slup_err_norm"
+  normalize_stream "$sup_out" "$sup_out_norm"
+  normalize_stream "$sup_err" "$sup_err_norm"
 
-  if cmp -s "$ref_out_norm" "$slup_out_norm" && cmp -s "$ref_err_norm" "$slup_err_norm"; then
+  if cmp -s "$ref_out_norm" "$sup_out_norm" && cmp -s "$ref_err_norm" "$sup_err_norm"; then
     sections_ok=$((sections_ok + 1))
   else
     append_note "$section_rel: output mismatch (baseline=$ref_lang)"

@@ -44,7 +44,7 @@ This maps Perl function families to Slup for a shell-first language.
 
 Examples:
 
-```slup
+```sup
 set %h = sys("perl.call", "Digest::SHA", "sha256_hex", ["abc"])
 print(dict-get(%h, "result"))
 ```

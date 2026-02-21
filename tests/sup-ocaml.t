@@ -8,20 +8,20 @@ use FindBin qw($Bin);
 use File::Spec;
 
 my $root = File::Spec->catdir($Bin, '..');
-my $demo = File::Spec->catfile($root, 'demo.slup');
+my $demo = File::Spec->catfile($root, 'demo.sup');
 
-my $build_cmd = qq{cd "$root" && eval \$(opam env) && dune build ./slup.exe 2>&1};
+my $build_cmd = qq{cd "$root" && eval \$(opam env) && dune build ./sup.exe 2>&1};
 my $build_out = `$build_cmd`;
 my $build_status = $? >> 8;
 if ($build_status != 0) {
     BAIL_OUT("dune build failed:\n$build_out");
 }
 
-my $slup = File::Spec->catfile($root, '_build', 'default', 'slup.exe');
+my $slup = File::Spec->catfile($root, '_build', 'default', 'sup.exe');
 
 sub run_slup {
     my ($program) = @_;
-    my ($fh, $path) = tempfile(SUFFIX => '.slup', UNLINK => 1);
+    my ($fh, $path) = tempfile(SUFFIX => '.sup', UNLINK => 1);
     print {$fh} $program;
     close $fh;
 
@@ -33,7 +33,7 @@ sub run_slup {
 
 sub run_slup_env {
     my ($env, $program) = @_;
-    my ($fh, $path) = tempfile(SUFFIX => '.slup', UNLINK => 1);
+    my ($fh, $path) = tempfile(SUFFIX => '.sup', UNLINK => 1);
     print {$fh} $program;
     close $fh;
 
@@ -511,7 +511,7 @@ SLUP
 }
 
 {
-    my ($status, $out) = run_slup_env({ SLUP_MAX_CALL_DEPTH => 6 }, <<'SLUP');
+    my ($status, $out) = run_slup_env({ SUP_MAX_CALL_DEPTH => 6 }, <<'SLUP');
 rec dive($n)
   if lt($n, 1)
     return(0)
@@ -525,7 +525,7 @@ SLUP
 }
 
 {
-    my ($status, $out) = run_slup_env({ SLUP_MAX_CAPTURE_BYTES => 8 }, <<'SLUP');
+    my ($status, $out) = run_slup_env({ SUP_MAX_CAPTURE_BYTES => 8 }, <<'SLUP');
 set %r = run(["/bin/sh", "-c", "printf 1234567890"])
 print(dict-get(%r, "out"))
 SLUP
@@ -640,19 +640,19 @@ SLUP
 
 {
     my ($status, $out) = run_file($demo);
-    is($status, 0, 'demo.slup executes (ocaml)');
-    like($out, qr/-- demo complete --\n/, 'demo.slup reaches completion (ocaml)');
+    is($status, 0, 'demo.sup executes (ocaml)');
+    like($out, qr/-- demo complete --\n/, 'demo.sup reaches completion (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'alpha.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'alpha.sup'), <<'SLUP');
 set $name = "alpha"
 defun who($x)
   return(concat(concat($name, ":"), $x))
 end
 SLUP
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 set $name = "main"
 defun who($x)
   return(concat(concat($name, ":"), $x))
@@ -661,54 +661,54 @@ load("alpha")
 print(who("A"))
 print(alpha/who("B"))
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'qualified and unqualified function calls execute (ocaml)');
     is($out, "main:A\nalpha:B\n", 'main stays unqualified, module requires qualification (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'alpha.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'alpha.sup'), <<'SLUP');
 defun only_alpha()
   return("x")
 end
 SLUP
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 load("alpha")
 print(only_alpha())
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     ok($status != 0, 'module-only function is not available unqualified (ocaml)');
     like($out, qr/Unknown function: only_alpha/, 'unqualified module-only function fails clearly (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'alpha.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'alpha.sup'), <<'SLUP');
 $G = "from-module"
 defun getg()
   return($G)
 end
 SLUP
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 $G = "from-main"
 load("alpha")
 print($G)
 print(alpha/getg())
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'global variables are shared across modules (ocaml)');
     is($out, "from-module\nfrom-module\n", 'global value is shared and visible in both main and module (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'alpha.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'alpha.sup'), <<'SLUP');
 set $v = "module-local"
 set @items = ["a", "b", "c"]
 set %cfg = {k: "v"}
 SLUP
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 set $v = "main-local"
 load("alpha")
 print($v)
@@ -716,145 +716,145 @@ print($alpha/v)
 print(len(@alpha/items))
 print(dict-get(%alpha/cfg, "k"))
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'qualified var/array/dict access executes (ocaml)');
     is($out, "main-local\nmodule-local\n3\nv\n", 'module symbols stay scoped and are reachable through module/name (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'mods', 'helper.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'mods', 'helper.sup'), <<'SLUP');
 defun ping()
   return("pong")
 end
 SLUP
-    write_text(File::Spec->catfile($dir, 'mods', 'alpha.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'mods', 'alpha.sup'), <<'SLUP');
 load("helper")
 SLUP
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 load("mods/alpha")
 print(helper/ping())
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'relative load from inside a module executes (ocaml)');
     is($out, "pong\n", 'module load resolves relative paths from caller module directory (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'alpha.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'alpha.sup'), <<'SLUP');
 defun call_main()
   return(who("z"))
 end
 SLUP
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 defun who($x)
   return(concat("main:", $x))
 end
 load("alpha")
 print(alpha/call_main())
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'module can resolve main symbols unqualified (ocaml)');
     is($out, "main:z\n", 'main module remains an unqualified fallback namespace (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'alpha.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'alpha.sup'), <<'SLUP');
 $LOAD_COUNT = add($LOAD_COUNT, 1)
 SLUP
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 $LOAD_COUNT = 0
 load("alpha")
 load("alpha")
 print($LOAD_COUNT)
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'loading same module twice executes module once (ocaml)');
     is($out, "1\n", 'load() caches module execution by resolved path (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'a.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'a.sup'), <<'SLUP');
 load("b")
 SLUP
-    write_text(File::Spec->catfile($dir, 'b.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'b.sup'), <<'SLUP');
 load("a")
 SLUP
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 load("a")
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     ok($status != 0, 'cyclic load fails (ocaml)');
     like($out, qr/load: cyclic dependency detected:/, 'cyclic load failure is clear (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'left', 'alpha.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'left', 'alpha.sup'), <<'SLUP');
 print("left")
 SLUP
-    write_text(File::Spec->catfile($dir, 'right', 'alpha.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'right', 'alpha.sup'), <<'SLUP');
 print("right")
 SLUP
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 load("left/alpha")
 load("right/alpha")
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     ok($status != 0, 'module name collision across different files fails (ocaml)');
     like($out, qr/module name collision 'alpha'/, 'module name collision error is clear (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 set @ARGS = ["a", "b"]
 print(len(@ARGS))
 print(gt(len(dict-keys(%ENV)), 0))
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'uppercase @ARGS and %ENV are globals (ocaml)');
     is($out, "2\n1\n", 'global arrays/dicts are accessible without namespacing (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 print(sh("echo ok"))
 print(sh("echo ok | cat", 1))
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'sh() works for safe commands and explicit-unsafe override (ocaml)');
     is($out, "ok\nok\n", 'sh() output is captured for safe and overridden commands (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 sh("echo ok | cat")
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     ok($status != 0, 'sh() rejects unsafe shell metacharacters by default (ocaml)');
     like($out, qr/unsafe shell metacharacters detected/, 'unsafe sh() error is clear (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 stderr("warn")
 print("out")
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'stderr() builtin executes (ocaml)');
     like($out, qr/(?:warn\nout\n|out\nwarn\n)\z/, 'stderr() emits alongside stdout with line semantics (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 set $user-name = "ben"
 set $http->status = "200"
 set $ready? = "yes"
@@ -864,17 +864,17 @@ print($http->status)
 print($ready?)
 print($MY-GLOBAL?)
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'dash, arrow, and question-mark symbols execute (ocaml)');
     is($out, "ben\n200\nyes\nOK\n", 'symbol names support -, ->, and ? (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 set $Bad = "x"
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     ok($status != 0, 'mixed-case local variable names are rejected (ocaml)');
     like($out, qr/locals must be lowercase/, 'mixed-case local rejection is clear (ocaml)');
 }
@@ -963,11 +963,11 @@ SLUP
     chmod 0751, $src or die "cannot chmod $src: $!";
     my $fixed = time - 120;
     utime $fixed, $fixed, $src or die "cannot utime $src: $!";
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<"SLUP");
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<"SLUP");
 cp("$src", "$dst")
 print(file->exists("$dst"))
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'cp() executes for binary files (ocaml)');
     is($out, "1\n", 'cp() creates destination file (ocaml)');
     is(slurp_raw($dst), slurp_raw($src), 'cp() preserves binary content (ocaml)');
@@ -977,7 +977,7 @@ SLUP
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 set %caps = sys("sys.capabilities")
 print(dict-get(%caps, "ok"))
 print(gt(len(dict-get(%caps, "items")), 0))
@@ -985,7 +985,7 @@ set %pid = sys->call("posix.getpid")
 print(dict-get(%pid, "ok"))
 print(gt(dict-get(%pid, "pid"), 0))
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'sys capabilities and sys->call alias execute (ocaml)');
     is($out, "1\n1\n1\n1\n", 'sys reports capabilities and getpid through alias (ocaml)');
 }
@@ -994,7 +994,7 @@ SLUP
     my $dir = tempdir(CLEANUP => 1);
     my $path = File::Spec->catfile($dir, 'node.txt');
     my $missing = File::Spec->catfile($dir, 'missing.txt');
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<"SLUP");
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<"SLUP");
 text->file("abc", "$path")
 set %s = sys("posix.stat", "$path")
 print(dict-get(%s, "ok"))
@@ -1010,7 +1010,7 @@ set %bad = sys("posix.nope")
 print(dict-get(%bad, "ok"))
 print(gt(dict-get(%bad, "code"), 0))
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'sys posix stat/access paths and error paths execute (ocaml)');
     is($out, "1\nfile\n1\n1\n1\n0\n1\n0\n1\n", 'sys returns structured ok/code for success and failures (ocaml)');
 }
@@ -1019,7 +1019,7 @@ SLUP
     my $dir = tempdir(CLEANUP => 1);
     my $node = File::Spec->catfile($dir, 'node');
     my $link = File::Spec->catfile($dir, 'node.link');
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<"SLUP");
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<"SLUP");
 set %mk = sys("posix.mkdir", "$node", "0750")
 print(dict-get(%mk, "ok"))
 set %ch = sys("posix.chmod", "$node", "0700")
@@ -1039,7 +1039,7 @@ print(dict-get(%ul, "ok"))
 set %rd = sys("posix.rmdir", "$node")
 print(dict-get(%rd, "ok"))
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'sys posix mutation capabilities execute (ocaml)');
     is($out, "1\n1\n1\n1\n1\n1\n1\n1\n1\n", 'mkdir/chmod/stat/utime/symlink/lstat/readlink/unlink/rmdir all succeed (ocaml)');
 }
@@ -1047,7 +1047,7 @@ SLUP
 {
     my $dir = tempdir(CLEANUP => 1);
     my $path = File::Spec->catfile($dir, 'node.txt');
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<"SLUP");
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<"SLUP");
 text->file("x", "$path")
 print(eq(path->basename("$path"), "node.txt"))
 print(eq(path->dirname("$path"), "$dir"))
@@ -1060,7 +1060,7 @@ print(gt(time->now(), 0))
 print(matchrx(time->iso-utc(), #"T"))
 print(gt(len(dir->list("$dir")), 0))
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'path/date/time aliases execute (ocaml)');
     is($out, "1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n", 'path/date/time and dir->list aliases preserve behavior (ocaml)');
 }
@@ -1069,7 +1069,7 @@ SLUP
     my $dir = tempdir(CLEANUP => 1);
     my $lines_path = File::Spec->catfile($dir, 'lines.txt');
     my $text_path = File::Spec->catfile($dir, 'text.txt');
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<"SLUP");
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<"SLUP");
 set \@xs = ["alpha", "beta"]
 lines->file(\@xs, "$lines_path")
 set \@ys = file->lines("$lines_path")
@@ -1078,7 +1078,7 @@ print(get(\@ys, 0))
 text->file("hello", "$text_path")
 print(file->text("$text_path"))
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'directional file aliases execute (ocaml)');
     is($out, "2\nalpha\nhello\n", 'file->text/text->file and file->lines/lines->file roundtrip correctly (ocaml)');
 }
@@ -1087,7 +1087,7 @@ SLUP
     my $dir = tempdir(CLEANUP => 1);
     my $subdir = File::Spec->catfile($dir, 'subdir');
     my $text_path = File::Spec->catfile($dir, 'aliases.txt');
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<"SLUP");
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<"SLUP");
 mkdir("$subdir")
 set \@xs = ["a", "b"]
 array->push(\@xs, "c")
@@ -1117,55 +1117,55 @@ print(dir->exists(".."))
 set \@entries = dir->entries("$dir")
 print(gt(array->len(\@entries), 0))
 SLUP
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'namespaced aliases execute (ocaml)');
     is($out, "3\nc\nc\nv\n1\nz\n3\nAB\nxy\n1\n1\n1\nAB\n0\n1\n1\n", 'array/dict/text/dir/file aliases preserve behavior (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'mod.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'mod.sup'), <<'SLUP');
 $DB_HOST = "localhost"
 SLUP
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 global $DB_HOST required
 load("mod")
 SLUP
-    my ($status, $out) = run_file_with_opt('--check', File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file_with_opt('--check', File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, '--check passes when required global is assigned (ocaml)');
     is($out, '', '--check success is silent (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 global $DB_HOST required
 set $path = "mod"
 load($path)
 SLUP
-    my ($status, $out) = run_file_with_opt('--check', File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file_with_opt('--check', File::Spec->catfile($dir, 'main.sup'));
     ok($status != 0, '--check rejects dynamic load targets (ocaml)');
     like($out, qr/static check requires load\("literal"\)/, '--check reports dynamic load limitation (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 global $DB_PORT default("5432")
 print($DB_PORT)
 SLUP
-    my ($status, $out) = run_file_with_opt('--strict-globals', File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file_with_opt('--strict-globals', File::Spec->catfile($dir, 'main.sup'));
     is($status, 0, 'strict mode applies declared defaults (ocaml)');
     is($out, "5432\n", 'strict mode exposes defaulted globals (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
+    write_text(File::Spec->catfile($dir, 'main.sup'), <<'SLUP');
 global $DECLARED default("ok")
 print($MISSING)
 SLUP
-    my ($status, $out) = run_file_with_opt('--strict-globals', File::Spec->catfile($dir, 'main.slup'));
+    my ($status, $out) = run_file_with_opt('--strict-globals', File::Spec->catfile($dir, 'main.sup'));
     ok($status != 0, 'strict mode rejects undeclared global reads (ocaml)');
     like($out, qr/undeclared global read/, 'strict mode undeclared-read error is clear (ocaml)');
 }

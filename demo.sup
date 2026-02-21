@@ -1,7 +1,7 @@
-# ── demo.slup ── showcase of the slup language ──
+# ── demo.sup ── showcase of the sup language ──
 
 # --- Variables and basic expressions ---
-set $name = "slup"
+set $name = "sup"
 set $version = 1
 print("Welcome to $name v$version")
 
@@ -25,7 +25,7 @@ if gt($a, $b)
   print("10 is greater than 3")
 end
 
-if eq($name, "slup")
+if eq($name, "sup")
   print("language confirmed")
 else
   print("unknown language")
@@ -63,7 +63,7 @@ defun greet($who)
 end
 
 greet("world")
-greet("slup user")
+greet("sup user")
 
 # --- function with logic ---
 defun classify($n)
@@ -120,8 +120,8 @@ set $date = sh("date +%Y-%m-%d")
 print("today: $date")
 
 # --- File I/O ---
-write-file("slup was here", "/tmp/slup-demo.txt")
-set $content = read-file("/tmp/slup-demo.txt")
+write-file("sup was here", "/tmp/sup-demo.txt")
+set $content = read-file("/tmp/sup-demo.txt")
 print("read back: $content")
 
 print("-- demo complete --")

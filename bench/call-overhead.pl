@@ -28,15 +28,15 @@ die "--impl must be one of: perl, ocaml\n" unless $impl eq 'perl' || $impl eq 'o
 my $root = File::Spec->rel2abs(File::Spec->catdir(File::Spec->curdir()));
 if (!defined $slup_path || $slup_path eq '') {
     $slup_path = $impl eq 'perl'
-        ? File::Spec->catfile($root, 'slup.pl')
-        : File::Spec->catfile($root, '_build', 'default', 'slup.exe');
+        ? File::Spec->catfile($root, 'sup.pl')
+        : File::Spec->catfile($root, '_build', 'default', 'sup.exe');
 }
 die "Cannot find interpreter at $slup_path\n" unless -f $slup_path;
 my $runner = $impl eq 'perl' ? ['perl', $slup_path] : [$slup_path];
 
 my $tmp = tempdir(CLEANUP => 1);
-my $program_no_fn = File::Spec->catfile($tmp, 'no-function.slup');
-my $program_fn = File::Spec->catfile($tmp, 'with-function.slup');
+my $program_no_fn = File::Spec->catfile($tmp, 'no-function.sup');
+my $program_fn = File::Spec->catfile($tmp, 'with-function.sup');
 
 my $ones = join(',', (1) x $calls);
 

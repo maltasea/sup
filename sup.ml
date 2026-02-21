@@ -1,4 +1,4 @@
-(* slup — a simple scripting language interpreter in OCaml *)
+(* sup — a simple scripting language interpreter in OCaml *)
 
 (* ============================================================
    Types
@@ -158,11 +158,16 @@ let parse_positive_int_env name default =
         if n > 0 then n else default
       with Failure _ -> default
 
+let parse_positive_int_env_alias preferred legacy default =
+  match getenv_opt preferred with
+  | Some _ -> parse_positive_int_env preferred default
+  | None -> parse_positive_int_env legacy default
+
 let max_call_depth =
-  parse_positive_int_env "SLUP_MAX_CALL_DEPTH" 1024
+  parse_positive_int_env_alias "SUP_MAX_CALL_DEPTH" "SLUP_MAX_CALL_DEPTH" 1024
 
 let max_capture_bytes =
-  parse_positive_int_env "SLUP_MAX_CAPTURE_BYTES" (16 * 1024 * 1024)
+  parse_positive_int_env_alias "SUP_MAX_CAPTURE_BYTES" "SLUP_MAX_CAPTURE_BYTES" (16 * 1024 * 1024)
 
 let dynarr_empty () = { data = [||]; len = 0 }
 
@@ -635,12 +640,21 @@ let resolve_load_path file =
       | Some d -> d
       | None -> "." in
     add (Filename.concat base_dir file);
-    if not (has_extension file) then add (Filename.concat base_dir (file ^ ".slup"));
+    if not (has_extension file) then begin
+      add (Filename.concat base_dir (file ^ ".sup"));
+      add (Filename.concat base_dir (file ^ ".slup")) (* backward compatibility *)
+    end;
     add file;
-    if not (has_extension file) then add (file ^ ".slup")
+    if not (has_extension file) then begin
+      add (file ^ ".sup");
+      add (file ^ ".slup") (* backward compatibility *)
+    end
   end else begin
     add file;
-    if not (has_extension file) then add (file ^ ".slup")
+    if not (has_extension file) then begin
+      add (file ^ ".sup");
+      add (file ^ ".slup") (* backward compatibility *)
+    end
   end;
   let rec pick = function
     | [] -> file
@@ -783,12 +797,21 @@ let resolve_load_path_from_file from_file target =
   if is_relative_path target then begin
     let base_dir = Filename.dirname from_file in
     add (Filename.concat base_dir target);
-    if not (has_extension target) then add (Filename.concat base_dir (target ^ ".slup"));
+    if not (has_extension target) then begin
+      add (Filename.concat base_dir (target ^ ".sup"));
+      add (Filename.concat base_dir (target ^ ".slup")) (* backward compatibility *)
+    end;
     add target;
-    if not (has_extension target) then add (target ^ ".slup")
+    if not (has_extension target) then begin
+      add (target ^ ".sup");
+      add (target ^ ".slup") (* backward compatibility *)
+    end
   end else begin
     add target;
-    if not (has_extension target) then add (target ^ ".slup")
+    if not (has_extension target) then begin
+      add (target ^ ".sup");
+      add (target ^ ".slup") (* backward compatibility *)
+    end
   end;
   let rec pick = function
     | [] -> None
@@ -2163,7 +2186,7 @@ let invoke_named_sub target_module sub_name evaled =
     failwith
       (with_line_context
          (Printf.sprintf
-            "maximum call depth exceeded (%d); set SLUP_MAX_CALL_DEPTH to override"
+            "maximum call depth exceeded (%d); set SUP_MAX_CALL_DEPTH to override (legacy: SLUP_MAX_CALL_DEPTH)"
             max_call_depth));
   let saved_returning = !returning in
   let saved_module = !current_module in
@@ -2607,7 +2630,7 @@ let invoke_lambda fn args =
     if saved_depth + 1 > max_call_depth then
       failwith
         (Printf.sprintf
-           "maximum call depth exceeded (%d); set SLUP_MAX_CALL_DEPTH to override"
+           "maximum call depth exceeded (%d); set SUP_MAX_CALL_DEPTH to override (legacy: SLUP_MAX_CALL_DEPTH)"
            max_call_depth);
     push_module_var_frame !current_module;
     call_depth := saved_depth + 1;
@@ -2664,7 +2687,7 @@ let slurp_file_capped ctx path =
   if st.Unix.st_size > max_capture_bytes then
     failwith
       (Printf.sprintf
-         "%s: captured output exceeds %d bytes (set SLUP_MAX_CAPTURE_BYTES to override)"
+         "%s: captured output exceeds %d bytes (set SUP_MAX_CAPTURE_BYTES to override; legacy: SLUP_MAX_CAPTURE_BYTES)"
          ctx max_capture_bytes);
   slurp_file path
 
@@ -2796,8 +2819,8 @@ let command_result_dict ~code ~out ~err =
 
 let run_command_capture cmdv timeout_s =
   let cmd = normalize_command_argv "run" cmdv in
-  let out_path = Filename.temp_file "slup-run-out" ".tmp" in
-  let err_path = Filename.temp_file "slup-run-err" ".tmp" in
+  let out_path = Filename.temp_file "sup-run-out" ".tmp" in
+  let err_path = Filename.temp_file "sup-run-err" ".tmp" in
   let devnull_fd : Unix.file_descr option ref = ref None in
   let out_fd : Unix.file_descr option ref = ref None in
   let err_fd : Unix.file_descr option ref = ref None in
@@ -2852,8 +2875,8 @@ let run_command_capture cmdv timeout_s =
 let run_pipeline_capture commands timeout_s =
   if commands = [] then
     failwith "pipe: command list must not be empty";
-  let out_path = Filename.temp_file "slup-pipe-out" ".tmp" in
-  let err_path = Filename.temp_file "slup-pipe-err" ".tmp" in
+  let out_path = Filename.temp_file "sup-pipe-out" ".tmp" in
+  let err_path = Filename.temp_file "sup-pipe-err" ".tmp" in
   let pids = ref [] in
   let last_pid = ref None in
   let prev_read = ref None in
@@ -4073,7 +4096,7 @@ let () =
     | file :: _ ->
       if run_static_check file then exit 0 else exit 1
     | [] ->
-      failwith "Usage: slup --check <file>"
+      failwith "Usage: sup --check <file>"
   end;
   (match !argv with
   | file :: _ when !strict_globals_mode ->

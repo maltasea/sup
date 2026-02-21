@@ -28,8 +28,8 @@ die "--iters must be > 0\n" unless $iters > 0;
 die "--warmup must be >= 0\n" unless $warmup >= 0;
 
 my $root = File::Spec->rel2abs(File::Spec->catdir(File::Spec->curdir()));
-my $slup = File::Spec->catfile($root, 'slup.pl');
-die "Cannot find slup.pl at $slup\n" unless -f $slup;
+my $slup = File::Spec->catfile($root, 'sup.pl');
+die "Cannot find sup.pl at $slup\n" unless -f $slup;
 
 my $tmp = tempdir(CLEANUP => 1);
 
@@ -39,8 +39,8 @@ my $ones_depth = join(',', (1) x $depth);
 # ----------------------------------------------------------------------
 # Recursion vs loop
 # ----------------------------------------------------------------------
-my $rec_iter = File::Spec->catfile($tmp, 'rec-iter.slup');
-my $rec_fn = File::Spec->catfile($tmp, 'rec-fn.slup');
+my $rec_iter = File::Spec->catfile($tmp, 'rec-iter.sup');
+my $rec_fn = File::Spec->catfile($tmp, 'rec-fn.sup');
 
 write_program(
     $rec_iter,
@@ -73,9 +73,9 @@ my $rec_with = bench_case('recursion(calls)', $slup, [], $rec_fn, $warmup, $iter
 # ----------------------------------------------------------------------
 # Local function call vs module-qualified call
 # ----------------------------------------------------------------------
-my $mod_file = File::Spec->catfile($tmp, 'benchmod.slup');
-my $mod_local = File::Spec->catfile($tmp, 'mod-local.slup');
-my $mod_qual = File::Spec->catfile($tmp, 'mod-qualified.slup');
+my $mod_file = File::Spec->catfile($tmp, 'benchmod.sup');
+my $mod_local = File::Spec->catfile($tmp, 'mod-local.sup');
+my $mod_qual = File::Spec->catfile($tmp, 'mod-qualified.sup');
 
 write_program(
     $mod_file,
@@ -120,7 +120,7 @@ my $mod_with = bench_case('module/function-calls', $slup, [], $mod_qual, $warmup
 # ----------------------------------------------------------------------
 # strict-globals overhead
 # ----------------------------------------------------------------------
-my $strict_prog = File::Spec->catfile($tmp, 'strict-globals.slup');
+my $strict_prog = File::Spec->catfile($tmp, 'strict-globals.sup');
 
 write_program(
     $strict_prog,

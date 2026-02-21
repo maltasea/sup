@@ -9,7 +9,7 @@ use Scalar::Util qw(blessed);
 use Time::HiRes qw(time usleep);
 
 # ============================================================
-#  slup — a simple scripting language interpreter in Perl
+#  sup — a simple scripting language interpreter in Perl
 # ============================================================
 
 # --- Variable store ---
@@ -678,13 +678,18 @@ sub resolve_load_path {
     require File::Spec;
     my @candidates;
     push @candidates, $file;
-    push @candidates, "$file.slup" if $file !~ /\.[^\/\\]+$/;
+    if ($file !~ /\.[^\/\\]+$/) {
+        push @candidates, "$file.sup";
+        push @candidates, "$file.slup"; # backward compatibility
+    }
 
     my $base_dir = $module_dirs{$current_module} // '.';
     if (!File::Spec->file_name_is_absolute($file)) {
         push @candidates, File::Spec->catfile($base_dir, $file);
-        push @candidates, File::Spec->catfile($base_dir, "$file.slup")
-            if $file !~ /\.[^\/\\]+$/;
+        if ($file !~ /\.[^\/\\]+$/) {
+            push @candidates, File::Spec->catfile($base_dir, "$file.sup");
+            push @candidates, File::Spec->catfile($base_dir, "$file.slup"); # backward compatibility
+        }
     }
 
     for my $candidate (@candidates) {
@@ -853,13 +858,18 @@ sub resolve_load_path_from_file {
     require File::Basename;
     my @candidates;
     push @candidates, $target;
-    push @candidates, "$target.slup" if $target !~ /\.[^\/\\]+$/;
+    if ($target !~ /\.[^\/\\]+$/) {
+        push @candidates, "$target.sup";
+        push @candidates, "$target.slup"; # backward compatibility
+    }
 
     if (!File::Spec->file_name_is_absolute($target)) {
         my $base_dir = File::Basename::dirname($from_file);
         push @candidates, File::Spec->catfile($base_dir, $target);
-        push @candidates, File::Spec->catfile($base_dir, "$target.slup")
-            if $target !~ /\.[^\/\\]+$/;
+        if ($target !~ /\.[^\/\\]+$/) {
+            push @candidates, File::Spec->catfile($base_dir, "$target.sup");
+            push @candidates, File::Spec->catfile($base_dir, "$target.slup"); # backward compatibility
+        }
     }
 
     for my $candidate (@candidates) {
@@ -3274,7 +3284,7 @@ while (@ARGV && $ARGV[0] =~ /^--/) {
 }
 
 if ($check_mode) {
-    die "Usage: slup.pl --check <file>\n" unless @ARGV;
+    die "Usage: sup.pl --check <file>\n" unless @ARGV;
     my $ok = run_static_check($ARGV[0]);
     exit($ok ? 0 : 1);
 }

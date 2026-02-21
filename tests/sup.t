@@ -6,12 +6,12 @@ use File::Temp qw(tempfile tempdir);
 use FindBin qw($Bin);
 use File::Spec;
 
-my $slup = File::Spec->catfile($Bin, '..', 'slup.pl');
-my $demo = File::Spec->catfile($Bin, '..', 'demo.slup');
+my $slup = File::Spec->catfile($Bin, '..', 'sup.pl');
+my $demo = File::Spec->catfile($Bin, '..', 'demo.sup');
 
 sub run_slup {
     my ($program) = @_;
-    my ($fh, $path) = tempfile(SUFFIX => '.slup', UNLINK => 1);
+    my ($fh, $path) = tempfile(SUFFIX => '.sup', UNLINK => 1);
     print {$fh} $program;
     close $fh;
 
@@ -418,8 +418,8 @@ SLUP
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    my $mod = File::Spec->catfile($dir, 'moda.slup');
-    my $main = File::Spec->catfile($dir, 'main.slup');
+    my $mod = File::Spec->catfile($dir, 'moda.sup');
+    my $main = File::Spec->catfile($dir, 'main.sup');
 
     open my $mfh, '>', $mod or die "cannot write $mod: $!";
     print {$mfh} <<'SLUP';
@@ -453,8 +453,8 @@ SLUP
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    my $mod = File::Spec->catfile($dir, 'modb.slup');
-    my $main = File::Spec->catfile($dir, 'main.slup');
+    my $mod = File::Spec->catfile($dir, 'modb.sup');
+    my $main = File::Spec->catfile($dir, 'main.sup');
 
     open my $mfh, '>', $mod or die "cannot write $mod: $!";
     print {$mfh} <<'SLUP';
@@ -524,6 +524,6 @@ SLUP
 
 {
     my ($status, $out) = run_file($demo);
-    is($status, 0, 'demo.slup executes');
-    like($out, qr/-- demo complete --\n/, 'demo.slup reaches completion');
+    is($status, 0, 'demo.sup executes');
+    like($out, qr/-- demo complete --\n/, 'demo.sup reaches completion');
 }

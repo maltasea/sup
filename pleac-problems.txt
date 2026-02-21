@@ -1,11 +1,11 @@
-# PLEAC Everyday Capability Gaps (SLUP)
+# PLEAC Everyday Capability Gaps (SUP)
 
 Date: 2026-02-21
 
 ## 1) Goal
 
 This report is not about conversion mechanics.  
-Its purpose is to identify what everyday scripting capabilities are still missing in SLUP.
+Its purpose is to identify what everyday scripting capabilities are still missing in SUP.
 
 ## 2) Scope
 
@@ -21,7 +21,7 @@ Reference-required sections excluded:
 - `pleac/Chapter_11_References_and_Records/Section_11.8`
 - `pleac/Chapter_11_References_and_Records/Section_11.11`
 
-## 3) What SLUP Already Covers Well
+## 3) What SUP Already Covers Well
 
 Current runtime already has strong daily primitives:
 - text basics: `concat`, `split`, `join`, `upper`, `lower`, `length`
@@ -47,7 +47,7 @@ Ranking prioritizes common scripting frequency and practical pain.
 | 7 | Byte/binary pack-unpack helpers | Needed for binary headers/protocol snippets | Chapter 1 (`1.1`, `1.4`, `1.5`), Chapter 7 (`7.15`) |
 | 8 | File descriptor redirection/dup model | Advanced CLI tooling and stream plumbing remains awkward | Chapter 7 (`7.19`, `7.20`) |
 | 9 | Nonblocking/select-style IO helpers | Important for some daemons/tools, less frequent for basic scripts | Chapter 7 (`7.13`, `7.14`) |
-| 10 | Safe template/interpolation engine (non-eval) | Some Perl examples use `eval` style expansion; needs safer SLUP form | Chapter 1 (`1.8`, `1.18`) |
+| 10 | Safe template/interpolation engine (non-eval) | Some Perl examples use `eval` style expansion; needs safer SUP form | Chapter 1 (`1.8`, `1.18`) |
 
 ## 5) Chapter-Specific Discussion (Your Priority: 1 and 7)
 
@@ -100,8 +100,8 @@ Phase C (advanced/system-level):
 ## 7) Success Criteria
 
 This report is successful when each remaining PLEAC blocker can be labeled as one of:
-- `missing_slup_feature` (real runtime gap)
+- `missing_sup_feature` (real runtime gap)
 - `snippet_noise` (cookbook fragment, not a language/runtime gap)
 - `out_of_scope` (module dependency or reference-required semantics)
 
-Only `missing_slup_feature` should drive SLUP roadmap work.
+Only `missing_sup_feature` should drive SUP roadmap work.
