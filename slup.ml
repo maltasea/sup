@@ -336,7 +336,7 @@ let re_while = Str.regexp {|^while[ 	]+\(.*\)$|}
 let re_switch = Str.regexp {|^switch[ 	]+\(.*\)$|}
 let re_case = Str.regexp {|^case[ 	]+\(.*\)$|}
 let re_sub_def =
-  Str.regexp {|^\(rec\|sub\|defun\|defn\)[ 	]+\([^ 	(]+\)[ 	]*(\([^)]*\))[ 	]*$|}
+  Str.regexp {|^\(rec\|sub\|defn\)[ 	]+\([^ 	(]+\)[ 	]*(\([^)]*\))[ 	]*$|}
 let re_alias =
   Str.regexp
     {|^alias[ 	]+\([^ 	=]+\)[ 	]*=[ 	]*\([^ 	]+\)[ 	]*$|}
@@ -1072,7 +1072,7 @@ let rec compile_expr raw_expr =
     if String.length trimmed > 0 && trimmed.[0] = '$' then begin
       match find_top_level_arrow trimmed with
       | Some _ ->
-        compile_lambda_expr ~label:"lambda" trimmed
+        compile_lambda_expr trimmed
       | None ->
         let items =
           List.map (fun pair ->
@@ -1117,22 +1117,21 @@ let rec compile_expr raw_expr =
     ERegex (Pcre.regexp pat)
   else
     match parse_func_call expr with
-    | Some ("fun", raw_args)
     | Some ("fn", raw_args) ->
-      compile_lambda_expr ~label:"fun" raw_args
+      compile_lambda_expr raw_args
     | Some (fname, raw_args) ->
       let args = parse_arglist raw_args in
       ECall (fname, List.map compile_expr args)
     | None ->
       failwith ("Cannot evaluate expression: '" ^ expr ^ "'")
 
-and compile_lambda_expr ?(label="fun") raw =
+and compile_lambda_expr raw =
   let trimmed = String.trim raw in
   let len = String.length trimmed in
   let arrow_pos =
     match find_top_level_arrow trimmed with
     | Some i -> i
-    | None -> failwith (label ^ ": missing ->")
+    | None -> failwith "fn: missing ->"
   in
   let params_str = String.trim (String.sub trimmed 0 arrow_pos) in
   let body_str = String.trim (String.sub trimmed (arrow_pos + 2) (len - arrow_pos - 2)) in
@@ -1141,16 +1140,16 @@ and compile_lambda_expr ?(label="fun") raw =
     else String.split_on_char ',' params_str
   in
   if param_parts = [] then
-    failwith (label ^ ": expected at least one parameter");
+    failwith "fn: expected at least one parameter";
   let params = List.map (fun p ->
     let p = String.trim p in
     if String.length p > 1 && p.[0] = '$' then
       let name = String.sub p 1 (String.length p - 1) in
       if not (is_local_name name) then
-        failwith (label ^ ": invalid parameter '$" ^ name ^ "' (locals must be lowercase)");
+        failwith ("fn: invalid parameter '$" ^ name ^ "' (locals must be lowercase)");
       name
     else
-      failwith (label ^ ": bad parameter '" ^ p ^ "'")
+      failwith ("fn: bad parameter '" ^ p ^ "'")
   ) param_parts in
   ELambda (params, compile_expr body_str)
 
