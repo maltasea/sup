@@ -28,7 +28,7 @@ my $curr = read_json($files[-1]);
 
 my @checks = (
     { key => 'recursion_over_loop',   label => 'recursion / loop', max_pct => $max_rec },
-    { key => 'module_over_local',     label => 'module/sub / local-sub', max_pct => $max_mod },
+    { key => 'module_over_local',     label => 'module/function / local-function', max_pct => $max_mod },
     { key => 'strict_over_nonstrict', label => 'strict / no-strict', max_pct => $max_strict },
 );
 

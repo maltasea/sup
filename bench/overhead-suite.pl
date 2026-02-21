@@ -57,7 +57,7 @@ SLUP
 write_program(
     $rec_fn,
     <<"SLUP"
-sub rec(\$n)
+defun rec(\$n)
   if lt(\$n, 1)
     return(0)
   end
@@ -71,7 +71,7 @@ my $rec_base = bench_case('rec-baseline(loop)', $slup, [], $rec_iter, $warmup, $
 my $rec_with = bench_case('recursion(calls)', $slup, [], $rec_fn, $warmup, $iters);
 
 # ----------------------------------------------------------------------
-# Local sub call vs module-qualified call
+# Local function call vs module-qualified call
 # ----------------------------------------------------------------------
 my $mod_file = File::Spec->catfile($tmp, 'benchmod.slup');
 my $mod_local = File::Spec->catfile($tmp, 'mod-local.slup');
@@ -80,7 +80,7 @@ my $mod_qual = File::Spec->catfile($tmp, 'mod-qualified.slup');
 write_program(
     $mod_file,
     <<"SLUP"
-sub inc(\$x)
+defun inc(\$x)
   return(add(\$x, 1))
 end
 SLUP
@@ -89,7 +89,7 @@ SLUP
 write_program(
     $mod_local,
     <<"SLUP"
-sub inc(\$x)
+defun inc(\$x)
   return(add(\$x, 1))
 end
 set \@nums = [$ones_calls]
@@ -114,8 +114,8 @@ print(\$sum)
 SLUP
 );
 
-my $mod_base = bench_case('local-sub-calls', $slup, [], $mod_local, $warmup, $iters);
-my $mod_with = bench_case('module/sub-calls', $slup, [], $mod_qual, $warmup, $iters);
+my $mod_base = bench_case('local-function-calls', $slup, [], $mod_local, $warmup, $iters);
+my $mod_with = bench_case('module/function-calls', $slup, [], $mod_qual, $warmup, $iters);
 
 # ----------------------------------------------------------------------
 # strict-globals overhead
@@ -143,7 +143,7 @@ printf "overhead ratio (recursion / loop): %.3fx\n", $rec_with->{avg_s} / $rec_b
 
 print "\nmodule-qualified benchmark (calls=$calls)\n";
 print_table($mod_base, $mod_with, $calls);
-printf "overhead ratio (module/sub / local-sub): %.3fx\n", $mod_with->{avg_s} / $mod_base->{avg_s};
+printf "overhead ratio (module/function / local-function): %.3fx\n", $mod_with->{avg_s} / $mod_base->{avg_s};
 
 print "\nstrict-globals benchmark (calls=$calls)\n";
 print_table($strict_base, $strict_with, $calls);

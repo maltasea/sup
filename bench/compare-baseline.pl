@@ -22,7 +22,7 @@ my $curr = read_json($files[-1]);
 
 my @metrics = (
     { key => 'recursion_over_loop',   label => 'recursion / loop' },
-    { key => 'module_over_local',     label => 'module/sub / local-sub' },
+    { key => 'module_over_local',     label => 'module/function / local-function' },
     { key => 'strict_over_nonstrict', label => 'strict / no-strict' },
 );
 

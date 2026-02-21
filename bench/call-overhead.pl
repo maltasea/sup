@@ -35,13 +35,13 @@ die "Cannot find interpreter at $slup_path\n" unless -f $slup_path;
 my $runner = $impl eq 'perl' ? ['perl', $slup_path] : [$slup_path];
 
 my $tmp = tempdir(CLEANUP => 1);
-my $program_no_sub = File::Spec->catfile($tmp, 'no-sub.slup');
-my $program_sub = File::Spec->catfile($tmp, 'with-sub.slup');
+my $program_no_fn = File::Spec->catfile($tmp, 'no-function.slup');
+my $program_fn = File::Spec->catfile($tmp, 'with-function.slup');
 
 my $ones = join(',', (1) x $calls);
 
 write_program(
-    $program_no_sub,
+    $program_no_fn,
     <<"SLUP"
 set \@nums = [$ones]
 set \$sum = 0
@@ -53,9 +53,9 @@ SLUP
 );
 
 write_program(
-    $program_sub,
+    $program_fn,
     <<"SLUP"
-sub inc(\$x)
+defun inc(\$x)
   return(add(\$x, 1))
 end
 set \@nums = [$ones]
@@ -67,14 +67,14 @@ print(\$sum)
 SLUP
 );
 
-my $base = bench_case('baseline(no-sub)', $program_no_sub, $warmup, $iters, $runner);
-my $with_sub = bench_case('with-sub-calls', $program_sub, $warmup, $iters, $runner);
+my $base = bench_case('baseline(no-function)', $program_no_fn, $warmup, $iters, $runner);
+my $with_fn = bench_case('with-function-calls', $program_fn, $warmup, $iters, $runner);
 
 printf "impl: %s (%s)\n", $impl, $slup_path;
 printf "\n%-20s %10s %10s\n", 'case', 'avg(s)', 'calls/s';
 printf "%-20s %10.4f %10.0f\n", $base->{name}, $base->{avg_s}, $calls / $base->{avg_s};
-printf "%-20s %10.4f %10.0f\n", $with_sub->{name}, $with_sub->{avg_s}, $calls / $with_sub->{avg_s};
-printf "\noverhead ratio (with-sub / baseline): %.3fx\n", $with_sub->{avg_s} / $base->{avg_s};
+printf "%-20s %10.4f %10.0f\n", $with_fn->{name}, $with_fn->{avg_s}, $calls / $with_fn->{avg_s};
+printf "\noverhead ratio (with-function / baseline): %.3fx\n", $with_fn->{avg_s} / $base->{avg_s};
 
 sub write_program {
     my ($path, $content) = @_;

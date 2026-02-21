@@ -1515,7 +1515,7 @@ let rec eval_expr = function
           | None -> 0
         in
         if active_count > 0 && not sub.recursive then
-          failwith (with_line_context ("recursion is not allowed for sub '" ^ sub_name ^ "'; declare it with rec"));
+          failwith (with_line_context ("recursion is not allowed for function '" ^ sub_name ^ "'; declare it with rec"));
         let saved_depth = !call_depth in
         if saved_depth + 1 > max_call_depth then
           failwith
@@ -1626,7 +1626,7 @@ and exec_node = function
       failwith ("Invalid local dict name '%" ^ name ^ "' (locals must be lowercase)")
   | NReturn (line_no, rexpr) ->
     if !call_depth <= 0 then
-      failwith (Printf.sprintf "return outside sub on line %d" line_no);
+      failwith (Printf.sprintf "return outside function on line %d" line_no);
     let ret = match rexpr with Some e -> eval_expr e | None -> Nil in
     module_var_set !current_module "_return" ret;
     returning := true

@@ -321,7 +321,7 @@ show()
 print($MYGLOBAL)
 SLUP
     is($status, 0, 'global assignment syntax executes');
-    is($out, "E3E\nUPDATED\n", 'global vars are visible and mutable across subs');
+    is($out, "E3E\nUPDATED\n", 'global vars are visible and mutable across functions');
 }
 
 {

@@ -345,8 +345,8 @@ defun count-down($n)
 end
 print(count-down(3))
 SLUP
-    ok($status != 0, 'sub recursion is rejected by default (ocaml)');
-    like($out, qr/recursion is not allowed for sub 'count-down'/, 'sub recursion error explains rec requirement (ocaml)');
+    ok($status != 0, 'function recursion is rejected by default (ocaml)');
+    like($out, qr/recursion is not allowed for function 'count-down'/, 'non-rec function recursion error explains rec requirement (ocaml)');
 }
 
 {
@@ -380,7 +380,7 @@ end
 print(a(2))
 SLUP
     ok($status != 0, 'mutual recursion is rejected for non-rec functions (ocaml)');
-    like($out, qr/recursion is not allowed for sub 'a'/, 'mutual recursion error points at recursive target (ocaml)');
+    like($out, qr/recursion is not allowed for function 'a'/, 'mutual recursion error points at recursive target (ocaml)');
 }
 
 {
@@ -407,8 +407,8 @@ SLUP
     my ($status, $out) = run_slup(<<'SLUP');
 return("x")
 SLUP
-    ok($status != 0, 'return(...) outside sub fails (ocaml)');
-    like($out, qr/return outside sub/, 'outside-sub return has clear error (ocaml)');
+    ok($status != 0, 'return(...) outside function fails (ocaml)');
+    like($out, qr/return outside function/, 'outside-function return has clear error (ocaml)');
 }
 
 {
