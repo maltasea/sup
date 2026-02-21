@@ -336,7 +336,7 @@ let re_while = Str.regexp {|^while[ 	]+\(.*\)$|}
 let re_switch = Str.regexp {|^switch[ 	]+\(.*\)$|}
 let re_case = Str.regexp {|^case[ 	]+\(.*\)$|}
 let re_sub_def =
-  Str.regexp {|^\(rec\|sub\|defn\)[ 	]+\([^ 	(]+\)[ 	]*(\([^)]*\))[ 	]*$|}
+  Str.regexp {|^\(rec\|defun\)[ 	]+\([^ 	(]+\)[ 	]*(\([^)]*\))[ 	]*$|}
 let re_alias =
   Str.regexp
     {|^alias[ 	]+\([^ 	=]+\)[ 	]*=[ 	]*\([^ 	]+\)[ 	]*$|}
@@ -1117,7 +1117,7 @@ let rec compile_expr raw_expr =
     ERegex (Pcre.regexp pat)
   else
     match parse_func_call expr with
-    | Some ("fn", raw_args) ->
+    | Some ("fun", raw_args) ->
       compile_lambda_expr raw_args
     | Some (fname, raw_args) ->
       let args = parse_arglist raw_args in
@@ -1131,7 +1131,7 @@ and compile_lambda_expr raw =
   let arrow_pos =
     match find_top_level_arrow trimmed with
     | Some i -> i
-    | None -> failwith "fn: missing ->"
+    | None -> failwith "fun: missing ->"
   in
   let params_str = String.trim (String.sub trimmed 0 arrow_pos) in
   let body_str = String.trim (String.sub trimmed (arrow_pos + 2) (len - arrow_pos - 2)) in
@@ -1140,16 +1140,16 @@ and compile_lambda_expr raw =
     else String.split_on_char ',' params_str
   in
   if param_parts = [] then
-    failwith "fn: expected at least one parameter";
+    failwith "fun: expected at least one parameter";
   let params = List.map (fun p ->
     let p = String.trim p in
     if String.length p > 1 && p.[0] = '$' then
       let name = String.sub p 1 (String.length p - 1) in
       if not (is_local_name name) then
-        failwith ("fn: invalid parameter '$" ^ name ^ "' (locals must be lowercase)");
+        failwith ("fun: invalid parameter '$" ^ name ^ "' (locals must be lowercase)");
       name
     else
-      failwith ("fn: bad parameter '" ^ p ^ "'")
+      failwith ("fun: bad parameter '" ^ p ^ "'")
   ) param_parts in
   ELambda (params, compile_expr body_str)
 

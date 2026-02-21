@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
-use Test::More tests => 145;
+use Test::More tests => 151;
 use File::Path qw(make_path);
 use File::Temp qw(tempfile tempdir);
 use FindBin qw($Bin);
@@ -94,42 +94,75 @@ SLUP
     my ($status, $out) = run_slup(<<'SLUP');
 def $base = 5
 let $next = add($base, 1)
-defn bump($x)
+defun bump($x)
   return(add($x, 1))
 end
 print($next)
 print(bump(9))
 SLUP
-    is($status, 0, 'def/let/defn aliases execute (ocaml)');
-    is($out, "6\n10\n", 'def/let/defn aliases output (ocaml)');
+    is($status, 0, 'def/let/defun aliases execute (ocaml)');
+    is($out, "6\n10\n", 'def/let/defun aliases output (ocaml)');
 }
 
 {
     my ($status, $out) = run_slup(<<'SLUP');
-set @xs = [1, 2, 3]
-set @ys = map(@xs, fn($x -> add($x, 1)))
-print(get(@ys, 0))
-print(get(@ys, 2))
+defn nope($x)
+  return($x)
+end
 SLUP
-    is($status, 0, 'fn(...) lambda alias executes (ocaml)');
-    is($out, "2\n4\n", 'fn(...) lambda alias output (ocaml)');
+    ok($status != 0, 'defn keyword is rejected (ocaml)');
+    like($out, qr/Syntax error/, 'defn rejection is explicit (ocaml)');
 }
 
 {
     my ($status, $out) = run_slup(<<'SLUP');
-sub double($n)
+sub nope($x)
+  return($x)
+end
+SLUP
+    ok($status != 0, 'sub keyword is rejected (ocaml)');
+    like($out, qr/Syntax error/, 'sub rejection is explicit (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+set @xs = [1, 2]
+set @ys = map(@xs, fn($x -> add($x, 1)))
+print(len(@ys))
+SLUP
+    ok($status != 0, 'fn keyword is rejected (ocaml)');
+    like($out, qr/Cannot evaluate expression/, 'fn rejection is explicit (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+set @xs = [1, 2, 3, 4]
+set @ys = map(@xs, fun($x -> add($x, 1)))
+set @zs = map(@xs, {$x -> add($x, 10)})
+set @big = filter(@ys, fun($x -> gt($x, 2)))
+print(get(@ys, 0))
+print(get(@zs, 3))
+print(len(@big))
+SLUP
+    is($status, 0, 'fun/lambda with map/filter executes (ocaml)');
+    is($out, "2\n14\n3\n", 'fun/lambda map/filter output (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+defun double($n)
   return(mul($n, 2))
   print("dead code")
 end
 print(double(4))
 SLUP
-    is($status, 0, 'return(...) in sub exits successfully (ocaml)');
-    is($out, "8\n", 'return(...) exits sub body early (ocaml)');
+    is($status, 0, 'return(...) in defun exits successfully (ocaml)');
+    is($out, "8\n", 'return(...) exits defun body early (ocaml)');
 }
 
 {
     my ($status, $out) = run_slup(<<'SLUP');
-sub find-blue()
+defun find-blue()
   set @colors = ["red", "blue", "green"]
   foreach $c @colors
     if eq($c, "blue")
@@ -304,7 +337,7 @@ SLUP
 
 {
     my ($status, $out) = run_slup(<<'SLUP');
-sub count-down($n)
+defun count-down($n)
   if lt($n, 1)
     return(0)
   end
@@ -332,13 +365,13 @@ SLUP
 
 {
     my ($status, $out) = run_slup(<<'SLUP');
-sub a($n)
+defun a($n)
   if lt($n, 1)
     return(0)
   end
   return(b(sub($n, 1)))
 end
-sub b($n)
+defun b($n)
   if lt($n, 1)
     return(0)
   end
@@ -507,11 +540,11 @@ SLUP
 
 {
     my ($status, $out) = run_slup(<<'SLUP');
-sub bad($x)
+defun bad($x)
   print($x)
 SLUP
-    ok($status != 0, 'missing end in sub fails (ocaml)');
-    like($out, qr/sub without matching end/, 'missing sub end has clear error (ocaml)');
+    ok($status != 0, 'missing end in defun fails (ocaml)');
+    like($out, qr/defun without matching end/, 'missing defun end has clear error (ocaml)');
 }
 
 {
@@ -534,13 +567,13 @@ SLUP
     my $dir = tempdir(CLEANUP => 1);
     write_text(File::Spec->catfile($dir, 'alpha.slup'), <<'SLUP');
 set $name = "alpha"
-sub who($x)
+defun who($x)
   return(concat(concat($name, ":"), $x))
 end
 SLUP
     write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
 set $name = "main"
-sub who($x)
+defun who($x)
   return(concat(concat($name, ":"), $x))
 end
 load("alpha")
@@ -555,7 +588,7 @@ SLUP
 {
     my $dir = tempdir(CLEANUP => 1);
     write_text(File::Spec->catfile($dir, 'alpha.slup'), <<'SLUP');
-sub only_alpha()
+defun only_alpha()
   return("x")
 end
 SLUP
@@ -572,7 +605,7 @@ SLUP
     my $dir = tempdir(CLEANUP => 1);
     write_text(File::Spec->catfile($dir, 'alpha.slup'), <<'SLUP');
 $G = "from-module"
-sub getg()
+defun getg()
   return($G)
 end
 SLUP
@@ -610,7 +643,7 @@ SLUP
 {
     my $dir = tempdir(CLEANUP => 1);
     write_text(File::Spec->catfile($dir, 'mods', 'helper.slup'), <<'SLUP');
-sub ping()
+defun ping()
   return("pong")
 end
 SLUP
@@ -629,12 +662,12 @@ SLUP
 {
     my $dir = tempdir(CLEANUP => 1);
     write_text(File::Spec->catfile($dir, 'alpha.slup'), <<'SLUP');
-sub call_main()
+defun call_main()
   return(who("z"))
 end
 SLUP
     write_text(File::Spec->catfile($dir, 'main.slup'), <<'SLUP');
-sub who($x)
+defun who($x)
   return(concat("main:", $x))
 end
 load("alpha")
