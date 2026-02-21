@@ -1,6 +1,6 @@
 # The slup Language
 
-This document describes implemented slup syntax plus the current Mini Shelm Light surface supported by the Perl runtime.
+This document describes implemented slup syntax plus the current Mini Shelm Light surface supported by the Perl and OCaml runtimes.
 
 ## Program Model
 
@@ -42,14 +42,14 @@ Supported expression forms:
 - array literal: `[1, "a", $x]`
 - dict literal: `{k: "v", "api-key": 1, $dyn_key: 2}`
 - function call: `add(1, 2)`
-- Mini Shelm call sugar (Perl runtime): `print add(1, 2)` (statement form)
+- Mini Shelm call sugar (Perl and OCaml runtimes): `print add(1, 2)` (statement form)
 - regex literal: `#"^abc"`
 - anonymous function: `{$x -> expr}` or `fun($x -> expr)`
-- Mini Shelm block lambda (Perl runtime): `fun [x] do ... end`
-- Mini Shelm infix forms (Perl runtime): `a + b`, `a == b`, `a and b`, `not a`
-- Mini Shelm regex forms (Perl runtime): `x =~ /pat/`, `x !~ /pat/`, `x =~ s/a/b/g`
-- Mini Shelm indexing (Perl runtime): `x[i]` for arrays and dicts
-- Mini Shelm literal names (Perl runtime): `name:` inside dict literals
+- Mini Shelm block lambda (Perl and OCaml runtimes): `fun [x] do ... end`
+- Mini Shelm infix forms (Perl and OCaml runtimes): `a + b`, `a == b`, `a and b`, `not a`
+- Mini Shelm regex forms (Perl and OCaml runtimes): `x =~ /pat/`, `x !~ /pat/`, `x =~ s/a/b/g`
+- Mini Shelm indexing (Perl and OCaml runtimes): `x[i]` for arrays and dicts
+- Mini Shelm literal names (Perl and OCaml runtimes): `name:` inside dict literals
 
 ## Statements
 
@@ -61,9 +61,9 @@ Supported expression forms:
 - Dict assignment: `set %d = expr`
 - Dict assignment aliases: `def %d = expr`, `let %d = expr`
 - Return: `return(expr)` or `return()`
-- Mini Shelm return form (Perl runtime): `return expr`
+- Mini Shelm return form (Perl and OCaml runtimes): `return expr`
 - Function call statement: `print("ok")`
-- Mini Shelm statement aliases (Perl runtime):
+- Mini Shelm statement aliases (Perl and OCaml runtimes):
   - `if expr then ... [elif expr then ...] [else ...] end`
   - `while expr do ... end`
   - `foreach name in expr do ... end`
@@ -160,4 +160,4 @@ end
 - Unknown function call is an error.
 - In strict globals mode, undeclared global reads/writes are errors.
 - Builtins include text/array/dict/file/path/date/time/system helpers and process helpers (`run`, `pipe`, `sh`).
-- Runtime note: Perl runtime supports `fun(...)` and `{$x -> ...}` lambda forms.
+- Runtime note: Perl and OCaml runtimes support `fun(...)`, `fun [..] do ... end`, and `{$x -> ...}` lambda forms.

@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
-use Test::More tests => 151;
+use Test::More tests => 159;
 use File::Path qw(make_path);
 use File::Temp qw(tempfile tempdir);
 use FindBin qw($Bin);
@@ -88,6 +88,87 @@ print($sum)
 SLUP
     is($status, 0, 'basic arithmetic exits successfully (ocaml)');
     is($out, "5\n", 'basic arithmetic output (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+def base = 2
+let bump = 3
+defun plus [a, b] do
+  return a + b
+end
+total = plus(base, bump)
+if total == 5 then
+  print("ok")
+elif total == 6 then
+  print("bad")
+else
+  print("no")
+end
+let xs = [1, 2, 3]
+let acc = 0
+foreach x in xs do
+  acc = acc + x
+end
+print(acc)
+let i = 0
+let w = 0
+while i < 5 do
+  i = i + 1
+  if i == 2 then
+    continue
+  end
+  if i == 4 then
+    break
+  end
+  w = w + i
+end
+print(w)
+let d = {name: "bernd", age: 88}
+print(d["name"])
+d["age"] = 89
+print(d["age"])
+SLUP
+    is($status, 0, 'Mini Shelm Light statements execute (ocaml)');
+    is($out, "ok\n6\n4\nbernd\n89\n", 'Mini Shelm Light statement semantics (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+let s = "bananas"
+let hit = s =~ /na/
+let miss = s !~ /zz/
+let t = s =~ s/na/NA/g
+print(hit)
+print(miss)
+print(t)
+SLUP
+    is($status, 0, 'light regex forms execute (ocaml)');
+    is($out, "1\n1\nbaNANAs\n", 'light regex operators and substitution (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+let n = 3
+print add(n, 2)
+SLUP
+    is($status, 0, 'light bare-call statement form executes (ocaml)');
+    is($out, "5\n", 'light bare-call statement lowers to regular call (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+let inc = fun [x] do
+  return x + 1
+end
+let xs = [1, 2, 3]
+let ys = map(xs, inc)
+print(ys[0])
+print(ys[2])
+print(inc(7))
+SLUP
+    is($status, 0, 'fun [params] do ... end can produce lambda values (ocaml)');
+    is($out, "2\n4\n8\n", 'fun block lambda works with map, indexing, and direct calls (ocaml)');
 }
 
 {

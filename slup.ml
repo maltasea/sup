@@ -12,6 +12,7 @@ type value =
   | Dict of (string, value) Hashtbl.t
   | Rex of Pcre.regexp
   | Lambda of string list * expr
+  | LambdaSub of string * string
 and dynarr = {
   mutable data : value array;
   mutable len : int;
@@ -22,6 +23,7 @@ and dict_key =
 and expr =
   | EString of string
   | ENum of float
+  | ENil
   | EVar of string option * string
   | EArrVar of string option * string
   | EDictVar of string option * string
@@ -52,6 +54,8 @@ type node =
   | NAlias of int * string * string
   | NForeach of int * string * string * node list
   | NFori of int * string * string * node list
+  | NBreak of int
+  | NContinue of int
   | NCall of int * expr
 
 type sub_def = { params: string list; body: node list; recursive: bool }
@@ -72,12 +76,14 @@ let to_str = function
   | Dict _ -> "<dict>"
   | Rex _ -> "<regex>"
   | Lambda _ -> "<function>"
+  | LambdaSub _ -> "<function>"
 
 let to_num = function
   | Nil -> 0.0
   | Num f -> f
   | Str s -> (try float_of_string s with Failure _ -> 0.0)
   | Lambda _ -> 0.0
+  | LambdaSub _ -> 0.0
   | _ -> 0.0
 
 let is_truthy = function
@@ -90,6 +96,7 @@ let is_truthy = function
   | Dict _ -> true
   | Rex _ -> true
   | Lambda _ -> true
+  | LambdaSub _ -> true
 
 (* ============================================================
    Global state
@@ -314,6 +321,9 @@ let () =
 let run_lines_ref : (string list -> unit) ref = ref (fun _ -> ())
 let call_depth = ref 0
 let returning = ref false
+let breaking = ref false
+let continuing = ref false
+let loop_depth = ref 0
 
 (* ============================================================
    Precompiled regexes
@@ -353,6 +363,32 @@ let re_regex_lit = Str.regexp {|^#"\(.*\)"$|}
 let re_end = Str.regexp {|^end\([ 	].*\)?$|}
 let re_else = Str.regexp {|^else\([ 	].*\)?$|}
 let re_global_default = Str.regexp {|^default[ 	]*(\(.*\))[ 	]*$|}
+
+let re_light_defun =
+  Str.regexp {|^defun[ 	]+\([A-Za-z_][A-Za-z0-9_]*\)\([ 	]*\[\([^]]*\)\]\)?[ 	]+do$|}
+let re_light_if_then = Str.regexp {|^if[ 	]+\(.*\)[ 	]+then$|}
+let re_light_elif_then = Str.regexp {|^elif[ 	]+\(.*\)[ 	]+then$|}
+let re_light_while_do = Str.regexp {|^while[ 	]+\(.*\)[ 	]+do$|}
+let re_light_foreach_do =
+  Str.regexp {|^foreach[ 	]+\([A-Za-z_][A-Za-z0-9_]*\)[ 	]+in[ 	]+\(.*\)[ 	]+do$|}
+let re_light_let_def =
+  Str.regexp {|^\(let\|def\)[ 	]+\([A-Za-z_][A-Za-z0-9_]*\)[ 	]*=[ 	]*\(.*\)$|}
+let re_light_assign =
+  Str.regexp {|^\([A-Za-z_][A-Za-z0-9_]*\)[ 	]*=[ 	]*\(.*\)$|}
+let re_light_index_assign =
+  Str.regexp {|^\([A-Za-z_][A-Za-z0-9_]*\)[ 	]*\[[ 	]*\(.*\)[ 	]*\][ 	]*=[ 	]*\(.*\)$|}
+let re_light_call_stmt =
+  Str.regexp {|^\([A-Za-z_][A-Za-z0-9_]*\)[ 	]*([ 	]*\(.*\)[ 	]*)$|}
+let re_light_bare_call =
+  Str.regexp {|^\([A-Za-z_][A-Za-z0-9_]*\)[ 	]+\(.+\)$|}
+let re_light_return =
+  Str.regexp {|^return\([ 	]+\(.*\)\)?$|}
+let re_light_fun_assign_let_def =
+  Str.regexp
+    {|^\(let\|def\)[ 	]+\([A-Za-z_][A-Za-z0-9_]*\)[ 	]*=[ 	]*fun[ 	]*\[\([^]]*\)\][ 	]+do$|}
+let re_light_fun_assign =
+  Str.regexp
+    {|^\([A-Za-z_][A-Za-z0-9_]*\)[ 	]*=[ 	]*fun[ 	]*\[\([^]]*\)\][ 	]+do$|}
 
 let re_matches rex s = Str.string_match rex s 0
 
@@ -981,6 +1017,688 @@ let split_dict_pair pair =
     let right = String.sub pair (idx + 1) (len - idx - 1) in
     Some (left, right)
 
+type light_token =
+  | LTNum of string
+  | LTStr of string
+  | LTBool of bool
+  | LTNil
+  | LTIdent of string
+  | LTKeywordLit of string
+  | LTRegex of string * string
+  | LTSubst of string * string * string
+  | LTOp of string
+  | LTPunct of char
+  | LTEof
+
+type light_ast =
+  | LANum of string
+  | LAStr of string
+  | LABool of bool
+  | LANil
+  | LAIdent of string
+  | LARegex of string * string
+  | LASubst of string * string * string
+  | LAArray of light_ast list
+  | LADict of (light_ast * light_ast) list
+  | LACall of light_ast * light_ast list
+  | LAIndex of light_ast * light_ast
+  | LAUnary of string * light_ast
+  | LABin of string * light_ast * light_ast
+
+let re_light_dash_symbol =
+  Str.regexp {|[A-Za-z_][A-Za-z0-9_]*-[A-Za-z0-9_]|}
+let re_light_module_call =
+  Str.regexp {|[A-Za-z_][A-Za-z0-9_]*/[A-Za-z_][A-Za-z0-9_]*[ 	]*(|}
+let re_light_true_false_call =
+  Str.regexp {|\<\(true\|false\)[ 	]*(|}
+
+let string_starts_with_at s i prefix =
+  let plen = String.length prefix in
+  let slen = String.length s in
+  i + plen <= slen && String.sub s i plen = prefix
+
+let contains_sigils s =
+  let found = ref false in
+  String.iter (fun ch ->
+    if ch = '$' || ch = '@' || ch = '%' then found := true
+  ) s;
+  !found
+
+let is_light_ident name =
+  let len = String.length name in
+  if len = 0 || not (is_ident_start name.[0]) then false
+  else
+    let ok = ref true in
+    for i = 1 to len - 1 do
+      if not (is_ident_char name.[i]) then ok := false
+    done;
+    !ok
+
+let light_escape_string raw =
+  let buf = Buffer.create (String.length raw + 8) in
+  Buffer.add_char buf '"';
+  String.iter (fun ch ->
+    match ch with
+    | '\\' -> Buffer.add_string buf "\\\\"
+    | '"' -> Buffer.add_string buf "\\\""
+    | '\n' -> Buffer.add_string buf "\\n"
+    | '\r' -> Buffer.add_string buf "\\r"
+    | '\t' -> Buffer.add_string buf "\\t"
+    | _ -> Buffer.add_char buf ch
+  ) raw;
+  Buffer.add_char buf '"';
+  Buffer.contents buf
+
+let light_regex_literal_to_slup pat flags =
+  let mods = Buffer.create 4 in
+  if String.contains flags 'i' then Buffer.add_char mods 'i';
+  if String.contains flags 'm' then Buffer.add_char mods 'm';
+  if String.contains flags 's' then Buffer.add_char mods 's';
+  let full =
+    let m = Buffer.contents mods in
+    if m = "" then pat else "(?" ^ m ^ ":" ^ pat ^ ")"
+  in
+  let escaped = Buffer.create (String.length full + 8) in
+  String.iter (fun ch ->
+    if ch = '\\' then Buffer.add_string escaped "\\\\"
+    else if ch = '"' then Buffer.add_string escaped "\\\""
+    else Buffer.add_char escaped ch
+  ) full;
+  "#\"" ^ Buffer.contents escaped ^ "\""
+
+let light_read_quoted s start =
+  let len = String.length s in
+  let buf = Buffer.create 16 in
+  let i = ref start in
+  let escaped = ref false in
+  let closed = ref false in
+  while !i < len && not !closed do
+    let ch = s.[!i] in
+    if !escaped then begin
+      escaped := false;
+      Buffer.add_char buf ch;
+      incr i
+    end else if ch = '\\' then begin
+      escaped := true;
+      Buffer.add_char buf ch;
+      incr i
+    end else if ch = '"' then
+      closed := true
+    else begin
+      Buffer.add_char buf ch;
+      incr i
+    end
+  done;
+  if not !closed then failwith "unterminated string literal";
+  (Buffer.contents buf, !i + 1)
+
+let light_read_slash s start =
+  let len = String.length s in
+  let buf = Buffer.create 16 in
+  let i = ref start in
+  let escaped = ref false in
+  let closed = ref false in
+  while !i < len && not !closed do
+    let ch = s.[!i] in
+    if !escaped then begin
+      escaped := false;
+      Buffer.add_char buf ch;
+      incr i
+    end else if ch = '\\' then begin
+      escaped := true;
+      Buffer.add_char buf ch;
+      incr i
+    end else if ch = '/' then
+      closed := true
+    else begin
+      Buffer.add_char buf ch;
+      incr i
+    end
+  done;
+  if not !closed then failwith "unterminated regex literal";
+  (Buffer.contents buf, !i + 1)
+
+let light_read_flags s start =
+  let len = String.length s in
+  let rec scan j =
+    if j >= len then j
+    else
+      match s.[j] with
+      | 'A' .. 'Z' | 'a' .. 'z' -> scan (j + 1)
+      | _ -> j
+  in
+  let j = scan start in
+  (String.sub s start (j - start), j)
+
+let light_tokenize_expr expr =
+  let len = String.length expr in
+  let rec loop i prev_op acc =
+    let rec skip_ws j =
+      if j < len && (expr.[j] = ' ' || expr.[j] = '\t') then skip_ws (j + 1)
+      else j
+    in
+    let i = skip_ws i in
+    if i >= len then List.rev (LTEof :: acc)
+    else
+      let push token next prev =
+        loop next prev (token :: acc)
+      in
+      if prev_op = Some "=~" && i + 1 < len && expr.[i] = 's' && expr.[i + 1] = '/' then begin
+        let pat, after_pat = light_read_slash expr (i + 2) in
+        let rep, after_rep = light_read_slash expr after_pat in
+        let flags, next_i = light_read_flags expr after_rep in
+        push (LTSubst (pat, rep, flags)) next_i None
+      end else if (prev_op = Some "=~" || prev_op = Some "!~") && expr.[i] = '/' then begin
+        let pat, after_pat = light_read_slash expr (i + 1) in
+        let flags, next_i = light_read_flags expr after_pat in
+        push (LTRegex (pat, flags)) next_i None
+      end else
+        match expr.[i] with
+        | '"' ->
+          let raw, next_i = light_read_quoted expr (i + 1) in
+          push (LTStr raw) next_i None
+        | '0' .. '9' ->
+          let j = ref i in
+          while !j < len && match expr.[!j] with '0' .. '9' -> true | _ -> false do incr j done;
+          if !j < len && expr.[!j] = '.' then begin
+            incr j;
+            while !j < len && match expr.[!j] with '0' .. '9' -> true | _ -> false do incr j done
+          end;
+          push (LTNum (String.sub expr i (!j - i))) !j None
+        | c when is_ident_start c ->
+          let j = ref (i + 1) in
+          while !j < len && is_ident_char expr.[!j] do incr j done;
+          let word = String.sub expr i (!j - i) in
+          if !j < len && expr.[!j] = ':' then
+            push (LTKeywordLit word) (!j + 1) None
+          else
+            let token, prev =
+              if word = "and" || word = "or" || word = "not" then
+                (LTOp word, Some word)
+              else if word = "true" then
+                (LTBool true, None)
+              else if word = "false" then
+                (LTBool false, None)
+              else if word = "nil" then
+                (LTNil, None)
+              else
+                (LTIdent word, None)
+            in
+            push token !j prev
+        | _ ->
+          let multi_ops = [ "=="; "!="; "<="; ">="; "=~"; "!~"; "++" ] in
+          let rec find_op = function
+            | [] -> None
+            | op :: rest ->
+              if string_starts_with_at expr i op then Some op else find_op rest
+          in
+          (match find_op multi_ops with
+          | Some op ->
+            push (LTOp op) (i + String.length op) (Some op)
+          | None ->
+            let ch = expr.[i] in
+            if ch = '+' || ch = '-' || ch = '*' || ch = '/' || ch = '%' || ch = '<' || ch = '>' then
+              push (LTOp (String.make 1 ch)) (i + 1) (Some (String.make 1 ch))
+            else if ch = '(' || ch = ')' || ch = '[' || ch = ']' || ch = '{' || ch = '}' || ch = ',' || ch = ':' then
+              push (LTPunct ch) (i + 1) None
+            else
+              failwith ("unsupported expression token near: " ^ String.sub expr i (min 20 (len - i))))
+  in
+  loop 0 None []
+
+let light_peek tokens pos =
+  if !pos < Array.length tokens then tokens.(!pos) else LTEof
+
+let light_next tokens pos =
+  let tok = light_peek tokens pos in
+  pos := !pos + 1;
+  tok
+
+let expect_light_punct tokens pos ch =
+  match light_next tokens pos with
+  | LTPunct c when c = ch -> ()
+  | _ -> failwith (Printf.sprintf "expected '%c'" ch)
+
+let rec light_parse_expr tokens pos = light_parse_or tokens pos
+
+and light_parse_or tokens pos =
+  let rec loop left =
+    match light_peek tokens pos with
+    | LTOp "or" ->
+      ignore (light_next tokens pos);
+      let right = light_parse_and tokens pos in
+      loop (LABin ("or", left, right))
+    | _ -> left
+  in
+  loop (light_parse_and tokens pos)
+
+and light_parse_and tokens pos =
+  let rec loop left =
+    match light_peek tokens pos with
+    | LTOp "and" ->
+      ignore (light_next tokens pos);
+      let right = light_parse_cmp tokens pos in
+      loop (LABin ("and", left, right))
+    | _ -> left
+  in
+  loop (light_parse_cmp tokens pos)
+
+and light_parse_cmp tokens pos =
+  let rec loop left =
+    match light_peek tokens pos with
+    | LTOp ("==" | "!=" | "<" | ">" | "<=" | ">=" | "=~" | "!~" as op) ->
+      ignore (light_next tokens pos);
+      let right = light_parse_add tokens pos in
+      loop (LABin (op, left, right))
+    | _ -> left
+  in
+  loop (light_parse_add tokens pos)
+
+and light_parse_add tokens pos =
+  let rec loop left =
+    match light_peek tokens pos with
+    | LTOp ("+" | "-" | "++" as op) ->
+      ignore (light_next tokens pos);
+      let right = light_parse_mul tokens pos in
+      loop (LABin (op, left, right))
+    | _ -> left
+  in
+  loop (light_parse_mul tokens pos)
+
+and light_parse_mul tokens pos =
+  let rec loop left =
+    match light_peek tokens pos with
+    | LTOp ("*" | "/" | "%" as op) ->
+      ignore (light_next tokens pos);
+      let right = light_parse_unary tokens pos in
+      loop (LABin (op, left, right))
+    | _ -> left
+  in
+  loop (light_parse_unary tokens pos)
+
+and light_parse_unary tokens pos =
+  match light_peek tokens pos with
+  | LTOp ("not" | "+" | "-" as op) ->
+    ignore (light_next tokens pos);
+    LAUnary (op, light_parse_unary tokens pos)
+  | _ ->
+    light_parse_postfix tokens pos
+
+and light_parse_postfix tokens pos =
+  let rec loop node =
+    match light_peek tokens pos with
+    | LTPunct '(' ->
+      ignore (light_next tokens pos);
+      let args =
+        match light_peek tokens pos with
+        | LTPunct ')' -> []
+        | _ ->
+          let rec parse_args acc =
+            let arg = light_parse_expr tokens pos in
+            match light_peek tokens pos with
+            | LTPunct ',' ->
+              ignore (light_next tokens pos);
+              parse_args (arg :: acc)
+            | _ -> List.rev (arg :: acc)
+          in
+          parse_args []
+      in
+      expect_light_punct tokens pos ')';
+      loop (LACall (node, args))
+    | LTPunct '[' ->
+      ignore (light_next tokens pos);
+      let idx = light_parse_expr tokens pos in
+      expect_light_punct tokens pos ']';
+      loop (LAIndex (node, idx))
+    | _ -> node
+  in
+  loop (light_parse_primary tokens pos)
+
+and light_parse_primary tokens pos =
+  match light_next tokens pos with
+  | LTNum s -> LANum s
+  | LTStr s -> LAStr s
+  | LTBool b -> LABool b
+  | LTNil -> LANil
+  | LTRegex (pat, flags) -> LARegex (pat, flags)
+  | LTSubst (pat, rep, flags) -> LASubst (pat, rep, flags)
+  | LTKeywordLit s -> LAStr s
+  | LTIdent s -> LAIdent s
+  | LTPunct '(' ->
+    let inner = light_parse_expr tokens pos in
+    expect_light_punct tokens pos ')';
+    inner
+  | LTPunct '[' ->
+    let items =
+      match light_peek tokens pos with
+      | LTPunct ']' -> []
+      | _ ->
+        let rec parse_items acc =
+          let v = light_parse_expr tokens pos in
+          match light_peek tokens pos with
+          | LTPunct ',' ->
+            ignore (light_next tokens pos);
+            parse_items (v :: acc)
+          | _ -> List.rev (v :: acc)
+        in
+        parse_items []
+    in
+    expect_light_punct tokens pos ']';
+    LAArray items
+  | LTPunct '{' ->
+    let pairs =
+      match light_peek tokens pos with
+      | LTPunct '}' -> []
+      | _ ->
+        let rec parse_pairs acc =
+          let key =
+            match light_peek tokens pos with
+            | LTKeywordLit k ->
+              ignore (light_next tokens pos);
+              LAStr k
+            | _ ->
+              let k = light_parse_expr tokens pos in
+              expect_light_punct tokens pos ':';
+              k
+          in
+          let value = light_parse_expr tokens pos in
+          match light_peek tokens pos with
+          | LTPunct ',' ->
+            ignore (light_next tokens pos);
+            parse_pairs ((key, value) :: acc)
+          | _ ->
+            List.rev ((key, value) :: acc)
+        in
+        parse_pairs []
+    in
+    expect_light_punct tokens pos '}';
+    LADict pairs
+  | LTEof ->
+    failwith "unexpected end of expression"
+  | _ ->
+    failwith "unexpected token in expression"
+
+let rec light_ast_to_slup ?(as_callee = false) node =
+  match node with
+  | LANum s -> s
+  | LAStr s -> light_escape_string s
+  | LABool b -> if b then "1" else "0"
+  | LANil -> "nil"
+  | LAIdent s -> if as_callee then s else "$" ^ s
+  | LARegex (pat, flags) -> light_regex_literal_to_slup pat flags
+  | LASubst _ -> failwith "substitution token can only be used with '=~'"
+  | LAArray items ->
+    "[" ^ String.concat ", " (List.map (light_ast_to_slup ~as_callee:false) items) ^ "]"
+  | LADict pairs ->
+    let rendered =
+      List.map (fun (k, v) ->
+        light_ast_to_slup ~as_callee:false k ^ ": " ^ light_ast_to_slup ~as_callee:false v
+      ) pairs
+    in
+    "{" ^ String.concat ", " rendered ^ "}"
+  | LACall (callee, args) ->
+    let fn = light_ast_to_slup ~as_callee:true callee in
+    if String.length fn > 0 && fn.[0] = '$' then
+      failwith "call target must be an identifier";
+    fn ^ "(" ^ String.concat ", " (List.map (light_ast_to_slup ~as_callee:false) args) ^ ")"
+  | LAIndex (base, idx) ->
+    "get(" ^ light_ast_to_slup ~as_callee:false base ^ ", "
+    ^ light_ast_to_slup ~as_callee:false idx ^ ")"
+  | LAUnary (op, rhs) ->
+    let rhs = light_ast_to_slup ~as_callee:false rhs in
+    if op = "+" then rhs
+    else if op = "-" then "sub(0, " ^ rhs ^ ")"
+    else if op = "not" then "not(" ^ rhs ^ ")"
+    else failwith ("unsupported unary operator '" ^ op ^ "'")
+  | LABin (op, left, right) ->
+    let lhs = light_ast_to_slup ~as_callee:false left in
+    if op = "=~" then
+      (match right with
+      | LASubst (pat, rep, flags) ->
+        "rx-sub(" ^ lhs ^ ", " ^ light_escape_string pat ^ ", "
+        ^ light_escape_string rep ^ ", " ^ light_escape_string flags ^ ")"
+      | _ ->
+        let rhs = light_ast_to_slup ~as_callee:false right in
+        "matchrx(" ^ lhs ^ ", " ^ rhs ^ ")")
+    else if op = "!~" then
+      let rhs = light_ast_to_slup ~as_callee:false right in
+      "not(matchrx(" ^ lhs ^ ", " ^ rhs ^ "))"
+    else
+      let rhs = light_ast_to_slup ~as_callee:false right in
+      let fn =
+        match op with
+        | "+" -> "add"
+        | "-" -> "sub"
+        | "*" -> "mul"
+        | "/" -> "div"
+        | "%" -> "mod"
+        | "++" -> "concat"
+        | "==" -> "eq"
+        | "!=" -> "neq"
+        | "<" -> "lt"
+        | ">" -> "gt"
+        | "<=" -> "lte"
+        | ">=" -> "gte"
+        | "and" -> "and"
+        | "or" -> "or"
+        | _ -> failwith ("unsupported operator '" ^ op ^ "'")
+      in
+      fn ^ "(" ^ lhs ^ ", " ^ rhs ^ ")"
+
+let maybe_normalize_light_expr expr =
+  let trim = String.trim expr in
+  if trim = "" then expr
+  else if trim.[0] = '$' || trim.[0] = '@' || trim.[0] = '%' || trim.[0] = '#' then expr
+  else if contains_sigils trim then expr
+  else
+    try
+      let toks = Array.of_list (light_tokenize_expr trim) in
+      let pos = ref 0 in
+      let ast = light_parse_expr toks pos in
+      (match light_peek toks pos with
+      | LTEof -> light_ast_to_slup ast
+      | _ -> expr)
+    with Failure _ ->
+      expr
+
+type light_block_meta =
+  | LightIf of int
+  | LightOther
+
+let parse_light_param_list raw label =
+  let parts =
+    String.split_on_char ',' raw
+    |> List.map String.trim
+    |> List.filter (fun s -> s <> "")
+  in
+  List.iter (fun p ->
+    if not (is_light_ident p) then
+      failwith ("Invalid parameter name '" ^ p ^ "' in " ^ label)
+  ) parts;
+  parts
+
+let opens_block_for_light line =
+  re_matches re_if line
+  || re_matches re_when line
+  || re_matches re_unless line
+  || re_matches re_while line
+  || re_matches re_switch line
+  || re_matches re_sub_def line
+  || re_matches re_foreach line
+  || re_matches re_fori line
+  || re_matches re_light_if_then line
+  || re_matches re_light_while_do line
+  || re_matches re_light_foreach_do line
+  || re_matches re_light_defun line
+  || re_matches re_light_fun_assign_let_def line
+  || re_matches re_light_fun_assign line
+
+let collect_light_do_block lines start label =
+  let len = Array.length lines in
+  let rec loop i depth acc =
+    if i >= len then
+      failwith (label ^ " without matching end")
+    else
+      let raw = lines.(i) in
+      let line = String.trim raw in
+      if is_blank_or_comment line then
+        loop (i + 1) depth (raw :: acc)
+      else if line = "end" then
+        if depth = 1 then
+          (List.rev acc, i + 1)
+        else
+          loop (i + 1) (depth - 1) (raw :: acc)
+      else if opens_block_for_light line then
+        loop (i + 1) (depth + 1) (raw :: acc)
+      else
+        loop (i + 1) depth (raw :: acc)
+  in
+  loop start 1 []
+
+let light_safe_call_candidate line =
+  not (contains_sigils line)
+  && (try ignore (Str.search_forward re_light_dash_symbol line 0); false with Not_found -> true)
+  && (try ignore (Str.search_forward re_light_module_call line 0); false with Not_found -> true)
+  && (try ignore (Str.search_forward re_light_true_false_call line 0); false with Not_found -> true)
+  && (try ignore (String.index line '\\'); false with Not_found -> true)
+
+let light_fun_block_seq = ref 0
+
+let rec normalize_light_program lines =
+  let arr = Array.of_list lines in
+  let len = Array.length arr in
+  let rec loop i stack tmp_id acc =
+    if i >= len then
+      List.rev acc
+    else
+      let raw = arr.(i) in
+      let line = String.trim raw in
+      if is_blank_or_comment line then
+        loop (i + 1) stack tmp_id (raw :: acc)
+      else if re_matches re_light_defun line then
+        let name = Str.matched_group 1 line in
+        let raw_params = try Str.matched_group 3 line with Not_found -> "" in
+        let params = parse_light_param_list raw_params "defun" in
+        let plist = String.concat ", " (List.map (fun p -> "$" ^ p) params) in
+        loop (i + 1) (LightOther :: stack) tmp_id (("defun " ^ name ^ "(" ^ plist ^ ")") :: acc)
+      else if re_matches re_light_if_then line then
+        let cond = Str.matched_group 1 line in
+        loop (i + 1) (LightIf 0 :: stack) tmp_id (("if " ^ maybe_normalize_light_expr cond) :: acc)
+      else if re_matches re_light_elif_then line then
+        (match stack with
+        | LightIf n :: rest ->
+          let cond = Str.matched_group 1 line in
+          let acc = ("if " ^ maybe_normalize_light_expr cond) :: ("else" :: acc) in
+          loop (i + 1) (LightIf (n + 1) :: rest) tmp_id acc
+        | _ ->
+          loop (i + 1) stack tmp_id (raw :: acc))
+      else if re_matches re_light_while_do line then
+        let cond = Str.matched_group 1 line in
+        loop (i + 1) (LightOther :: stack) tmp_id (("while " ^ maybe_normalize_light_expr cond) :: acc)
+      else if re_matches re_light_foreach_do line then
+        let var = Str.matched_group 1 line in
+        let expr = Str.matched_group 2 line in
+        let next_tmp = tmp_id + 1 in
+        let tmp = "__foreach_" ^ string_of_int next_tmp in
+        let acc =
+          ("foreach $" ^ var ^ " @" ^ tmp)
+          :: ("set @" ^ tmp ^ " = " ^ maybe_normalize_light_expr expr)
+          :: acc
+        in
+        loop (i + 1) (LightOther :: stack) next_tmp acc
+      else if re_matches re_light_fun_assign_let_def line then
+        let kw = Str.matched_group 1 line in
+        let var = Str.matched_group 2 line in
+        let raw_params = Str.matched_group 3 line in
+        let params = parse_light_param_list raw_params "fun" in
+        let body_raw, next_i = collect_light_do_block arr (i + 1) "fun" in
+        let body_norm = normalize_light_program body_raw in
+        incr light_fun_block_seq;
+        let fun_name = "__fun_block_" ^ string_of_int !light_fun_block_seq in
+        let plist = String.concat ", " (List.map (fun p -> "$" ^ p) params) in
+        let extra =
+          [ "defun " ^ fun_name ^ "(" ^ plist ^ ")" ]
+          @ body_norm
+          @ [ "end"; kw ^ " $" ^ var ^ " = make-fun-ref(" ^ light_escape_string fun_name ^ ")" ]
+        in
+        let acc = List.fold_left (fun a l -> l :: a) acc extra in
+        loop next_i stack tmp_id acc
+      else if re_matches re_light_fun_assign line then
+        let var = Str.matched_group 1 line in
+        let raw_params = Str.matched_group 2 line in
+        let params = parse_light_param_list raw_params "fun" in
+        let body_raw, next_i = collect_light_do_block arr (i + 1) "fun" in
+        let body_norm = normalize_light_program body_raw in
+        incr light_fun_block_seq;
+        let fun_name = "__fun_block_" ^ string_of_int !light_fun_block_seq in
+        let plist = String.concat ", " (List.map (fun p -> "$" ^ p) params) in
+        let extra =
+          [ "defun " ^ fun_name ^ "(" ^ plist ^ ")" ]
+          @ body_norm
+          @ [ "end"; "set $" ^ var ^ " = make-fun-ref(" ^ light_escape_string fun_name ^ ")" ]
+        in
+        let acc = List.fold_left (fun a l -> l :: a) acc extra in
+        loop next_i stack tmp_id acc
+      else if line = "end" then
+        (match stack with
+        | LightIf n :: rest ->
+          let rec add_extra acc n =
+            if n <= 0 then acc else add_extra ("end" :: acc) (n - 1)
+          in
+          let acc = add_extra ("end" :: acc) n in
+          loop (i + 1) rest tmp_id acc
+        | _ :: rest ->
+          loop (i + 1) rest tmp_id ("end" :: acc)
+        | [] ->
+          loop (i + 1) [] tmp_id ("end" :: acc))
+      else if line = "else" || line = "break" || line = "continue" then
+        loop (i + 1) stack tmp_id (line :: acc)
+      else if re_matches re_light_return line then
+        let expr = try String.trim (Str.matched_group 2 line) with Not_found -> "" in
+        let out =
+          if expr = "" then "return()"
+          else "return(" ^ maybe_normalize_light_expr expr ^ ")"
+        in
+        loop (i + 1) stack tmp_id (out :: acc)
+      else if re_matches re_light_let_def line then
+        let kw = Str.matched_group 1 line in
+        let name = Str.matched_group 2 line in
+        let expr = Str.matched_group 3 line in
+        loop (i + 1) stack tmp_id ((kw ^ " $" ^ name ^ " = " ^ maybe_normalize_light_expr expr) :: acc)
+      else if re_matches re_light_index_assign line then
+        let target = Str.matched_group 1 line in
+        let idx_expr = Str.matched_group 2 line in
+        let value_expr = Str.matched_group 3 line in
+        let out =
+          "set-index(" ^ maybe_normalize_light_expr target ^ ", "
+          ^ maybe_normalize_light_expr idx_expr ^ ", "
+          ^ maybe_normalize_light_expr value_expr ^ ")"
+        in
+        loop (i + 1) stack tmp_id (out :: acc)
+      else if re_matches re_light_assign line then
+        let name = Str.matched_group 1 line in
+        let expr = Str.matched_group 2 line in
+        loop (i + 1) stack tmp_id (("set $" ^ name ^ " = " ^ maybe_normalize_light_expr expr) :: acc)
+      else if re_matches re_light_call_stmt line && light_safe_call_candidate line then
+        loop (i + 1) stack tmp_id (maybe_normalize_light_expr line :: acc)
+      else if re_matches re_light_bare_call line then
+        let head = Str.matched_group 1 line in
+        let tail = Str.matched_group 2 line in
+        if List.mem head [ "if"; "elif"; "else"; "while"; "foreach"; "def"; "let"; "defun"; "fun";
+                           "return"; "break"; "continue"; "end"; "alias"; "global"; "when"; "unless";
+                           "switch"; "case"; "fori"; "set"; "rec"; "sub"; "defn" ] then
+          loop (i + 1) stack tmp_id (raw :: acc)
+        else
+          let candidate = head ^ "(" ^ tail ^ ")" in
+          if light_safe_call_candidate candidate then
+            loop (i + 1) stack tmp_id (maybe_normalize_light_expr candidate :: acc)
+          else
+            loop (i + 1) stack tmp_id (raw :: acc)
+      else
+        loop (i + 1) stack tmp_id (raw :: acc)
+  in
+  loop 0 [] 0 []
+
 (* ============================================================
    compile / eval / execute
    ============================================================ *)
@@ -1032,6 +1750,8 @@ let rec compile_expr raw_expr =
     EString (String.sub expr 1 (String.length expr - 2))
   else if re_matches re_number expr then
     ENum (float_of_string expr)
+  else if expr = "nil" then
+    ENil
   else if String.length expr > 1 && expr.[0] = '$' then begin
     match parse_prefixed_symbol expr '$' with
     | Some (module_name, name) ->
@@ -1400,6 +2120,10 @@ and compile_block lines start allow_else allow_case =
           failwith (Printf.sprintf "case without matching switch on line %d" (next_i + 1))
         | _ ->
           failwith (Printf.sprintf "fori without matching end on line %d" (i + 1)))
+      else if line = "break" then
+        loop (i + 1) (NBreak (i + 1) :: acc)
+      else if line = "continue" then
+        loop (i + 1) (NContinue (i + 1) :: acc)
       else if re_matches re_bare_call line then
         loop (i + 1) (NCall (i + 1, compile_expr line) :: acc)
       else
@@ -1408,7 +2132,8 @@ and compile_block lines start allow_else allow_case =
   loop start []
 
 let compile_program lines =
-  let arr = Array.of_list lines in
+  let normalized = normalize_light_program lines in
+  let arr = Array.of_list normalized in
   let nodes, next_i, term = compile_block arr 0 false false in
   match term with
   | None -> nodes
@@ -1420,12 +2145,85 @@ let compile_program lines =
     failwith (Printf.sprintf "end without matching block on line %d" next_i)
 
 let run_nodes_ref : (node list -> unit) ref = ref (fun _ -> ())
+let invoke_lambda_ref : (value -> value list -> value) ref =
+  ref (fun _ _ -> failwith "expected a function")
+
+let invoke_named_sub target_module sub_name evaled =
+  let sub = Hashtbl.find (module_subs_ref target_module) sub_name in
+  let call_id = target_module ^ "/" ^ sub_name in
+  let active_count =
+    match hashtbl_find_opt active_calls call_id with
+    | Some n -> n
+    | None -> 0
+  in
+  if active_count > 0 && not sub.recursive then
+    failwith (with_line_context ("recursion is not allowed for function '" ^ sub_name ^ "'; declare it with rec"));
+  let saved_depth = !call_depth in
+  if saved_depth + 1 > max_call_depth then
+    failwith
+      (with_line_context
+         (Printf.sprintf
+            "maximum call depth exceeded (%d); set SLUP_MAX_CALL_DEPTH to override"
+            max_call_depth));
+  let saved_returning = !returning in
+  let saved_module = !current_module in
+  push_module_var_frame target_module;
+  call_stack := call_id :: !call_stack;
+  Hashtbl.replace active_calls call_id (active_count + 1);
+  let restore () =
+    call_stack :=
+      (match !call_stack with
+      | _ :: tl -> tl
+      | [] -> []);
+    let count =
+      match hashtbl_find_opt active_calls call_id with
+      | Some n -> n - 1
+      | None -> 0
+    in
+    if count > 0 then Hashtbl.replace active_calls call_id count
+    else Hashtbl.remove active_calls call_id;
+    pop_module_var_frame target_module;
+    call_depth := saved_depth;
+    returning := saved_returning;
+    current_module := saved_module
+  in
+  call_depth := !call_depth + 1;
+  returning := false;
+  current_module := target_module;
+  (try
+     let rec bind_params params values =
+       match params with
+       | [] -> ()
+       | p :: ps ->
+         let v, vs =
+           match values with
+           | [] -> (Nil, [])
+           | x :: xs -> (x, xs)
+         in
+         module_var_set target_module p v;
+         bind_params ps vs
+     in
+     bind_params sub.params evaled;
+     module_var_remove_top target_module "_return";
+     !run_nodes_ref sub.body;
+     let ret =
+       match module_var_find_top target_module "_return" with
+       | Some v -> v
+       | None -> Nil
+     in
+     restore ();
+     ret
+   with exn ->
+     restore ();
+     raise exn)
 
 let rec eval_expr = function
   | EString raw ->
     parse_string_literal raw
   | ENum f ->
     Num f
+  | ENil ->
+    Nil
   | EVar (Some module_name, name) ->
     if is_global_name name then
       (require_declared_global name "expression" "read";
@@ -1507,70 +2305,7 @@ let rec eval_expr = function
     end else (
       match resolve_sub_target fname with
       | Some (target_module, sub_name) ->
-        let sub = Hashtbl.find (module_subs_ref target_module) sub_name in
-        let call_id = target_module ^ "/" ^ sub_name in
-        let active_count =
-          match hashtbl_find_opt active_calls call_id with
-          | Some n -> n
-          | None -> 0
-        in
-        if active_count > 0 && not sub.recursive then
-          failwith (with_line_context ("recursion is not allowed for function '" ^ sub_name ^ "'; declare it with rec"));
-        let saved_depth = !call_depth in
-        if saved_depth + 1 > max_call_depth then
-          failwith
-            (with_line_context
-               (Printf.sprintf
-                  "maximum call depth exceeded (%d); set SLUP_MAX_CALL_DEPTH to override"
-                  max_call_depth));
-        let saved_returning = !returning in
-        let saved_module = !current_module in
-        push_module_var_frame target_module;
-        call_stack := call_id :: !call_stack;
-        Hashtbl.replace active_calls call_id (active_count + 1);
-        let restore () =
-          call_stack :=
-            (match !call_stack with
-            | _ :: tl -> tl
-            | [] -> []);
-          let count =
-            match hashtbl_find_opt active_calls call_id with
-            | Some n -> n - 1
-            | None -> 0
-          in
-          if count > 0 then Hashtbl.replace active_calls call_id count
-          else Hashtbl.remove active_calls call_id;
-          pop_module_var_frame target_module;
-          call_depth := saved_depth;
-          returning := saved_returning;
-          current_module := saved_module
-        in
-        call_depth := !call_depth + 1;
-        returning := false;
-        current_module := target_module;
-        (try
-           let rec bind_params params values =
-             match params with
-             | [] -> ()
-             | p :: ps ->
-               let v, vs =
-                 match values with
-                 | [] -> (Nil, [])
-                 | x :: xs -> (x, xs)
-               in
-               module_var_set target_module p v;
-               bind_params ps vs
-           in
-           bind_params sub.params evaled;
-           module_var_remove_top target_module "_return";
-           !run_nodes_ref sub.body;
-           let ret = match module_var_find_top target_module "_return" with
-             | Some v -> v | None -> Nil in
-           restore ();
-           ret
-         with exn ->
-           restore ();
-           raise exn)
+        invoke_named_sub target_module sub_name evaled
       | None ->
         if Hashtbl.mem builtins fname then
           (try
@@ -1584,7 +2319,13 @@ let rec eval_expr = function
              in
              failwith (with_line_context msg))
         else
-          failwith (with_line_context ("Unknown function: " ^ fname))
+          match module_var_lookup !current_module fname with
+          | Some fn ->
+            (match fn with
+            | Lambda _ | LambdaSub _ -> (!invoke_lambda_ref) fn evaled
+            | _ -> failwith (with_line_context ("Unknown function: " ^ fname)))
+          | None ->
+            failwith (with_line_context ("Unknown function: " ^ fname))
     )
 
 and exec_node = function
@@ -1637,14 +2378,24 @@ and exec_node = function
     let cond = eval_expr cond_expr in
     if is_truthy cond then run_nodes false_body else run_nodes true_body
   | NWhile (_, cond_expr, body) ->
+    let saved_depth = !loop_depth in
+    loop_depth := saved_depth + 1;
     let rec run_loop () =
       if !returning then ()
       else if is_truthy (eval_expr cond_expr) then begin
         run_nodes body;
-        run_loop ()
+        if !returning then ()
+        else if !breaking then breaking := false
+        else if !continuing then (continuing := false; run_loop ())
+        else run_loop ()
       end
     in
-    run_loop ()
+    (try
+       run_loop ();
+       loop_depth := saved_depth
+     with exn ->
+       loop_depth := saved_depth;
+       raise exn)
   | NSwitch (_, switch_expr, cases, else_body) ->
     let switch_val = eval_expr switch_expr in
     let rec run_cases = function
@@ -1696,6 +2447,8 @@ and exec_node = function
       | Arr r -> Array.sub r.data 0 r.len
       | _ -> [||]
     in
+    let saved_depth = !loop_depth in
+    loop_depth := saved_depth + 1;
     let rec run_each idx =
       if idx >= Array.length arr_snapshot || !returning then ()
       else begin
@@ -1706,10 +2459,18 @@ and exec_node = function
         end else
           module_var_set !current_module var elem;
         run_nodes body;
-        run_each (idx + 1)
+        if !returning then ()
+        else if !breaking then breaking := false
+        else if !continuing then (continuing := false; run_each (idx + 1))
+        else run_each (idx + 1)
       end
     in
-    run_each 0
+    (try
+       run_each 0;
+       loop_depth := saved_depth
+     with exn ->
+       loop_depth := saved_depth;
+       raise exn)
   | NFori (line_no, var, arrname, body) ->
     if not (is_global_name var || is_local_name var) then
       failwith ("Invalid local variable name '$" ^ var ^ "' (locals must be lowercase)");
@@ -1738,6 +2499,8 @@ and exec_node = function
       | Arr r -> Array.sub r.data 0 r.len
       | _ -> [||]
     in
+    let saved_depth = !loop_depth in
+    loop_depth := saved_depth + 1;
     let rec run_each idx =
       if idx >= Array.length arr_snapshot || !returning then ()
       else begin
@@ -1749,10 +2512,26 @@ and exec_node = function
           module_var_set !current_module var elem;
         module_var_set !current_module "i" (Num (float_of_int idx));
         run_nodes body;
-        run_each (idx + 1)
+        if !returning then ()
+        else if !breaking then breaking := false
+        else if !continuing then (continuing := false; run_each (idx + 1))
+        else run_each (idx + 1)
       end
     in
-    run_each 0
+    (try
+       run_each 0;
+       loop_depth := saved_depth
+     with exn ->
+       loop_depth := saved_depth;
+       raise exn)
+  | NBreak line_no ->
+    if !loop_depth <= 0 then
+      failwith (Printf.sprintf "break outside loop on line %d" line_no);
+    breaking := true
+  | NContinue line_no ->
+    if !loop_depth <= 0 then
+      failwith (Printf.sprintf "continue outside loop on line %d" line_no);
+    continuing := true
   | NCall (_, expr) ->
     ignore (eval_expr expr)
 
@@ -1771,13 +2550,15 @@ and node_line_no = function
   | NAlias (line_no, _, _)
   | NForeach (line_no, _, _, _)
   | NFori (line_no, _, _, _)
+  | NBreak line_no
+  | NContinue line_no
   | NCall (line_no, _) ->
     line_no
 
 and run_nodes nodes =
   let rec loop = function
     | [] -> ()
-    | _ when !returning -> ()
+    | _ when !returning || !breaking || !continuing -> ()
     | node :: rest ->
       let saved_line = !active_line_no in
       active_line_no := Some (node_line_no node);
@@ -1816,7 +2597,7 @@ let require_dict fname = function
   | _ -> failwith (fname ^ ": first argument must be a dict")
 
 let require_lambda fname = function
-  | Lambda (params, body) -> (params, body)
+  | Lambda _ | LambdaSub _ -> ()
   | _ -> failwith (fname ^ ": argument must be a function")
 
 let invoke_lambda fn args =
@@ -1841,7 +2622,12 @@ let invoke_lambda fn args =
     pop_module_var_frame !current_module;
     call_depth := saved_depth;
     result
+  | LambdaSub (module_name, sub_name) ->
+    invoke_named_sub module_name sub_name args
   | _ -> failwith "expected a function"
+
+let () =
+  invoke_lambda_ref := invoke_lambda
 
 let status_to_code = function
   | Unix.WEXITED n -> n
@@ -2302,8 +3088,11 @@ let register_builtins () =
   add "gt" (fun a -> Num (if nth_num a 0 > nth_num a 1 then 1.0 else 0.0));
   add "lt" (fun a -> Num (if nth_num a 0 < nth_num a 1 then 1.0 else 0.0));
   add "ne" (fun a -> Num (if nth_str a 0 <> nth_str a 1 then 1.0 else 0.0));
+  add "neq" (fun a -> Num (if nth_str a 0 <> nth_str a 1 then 1.0 else 0.0));
   add "ge" (fun a -> Num (if nth_num a 0 >= nth_num a 1 then 1.0 else 0.0));
+  add "gte" (fun a -> Num (if nth_num a 0 >= nth_num a 1 then 1.0 else 0.0));
   add "le" (fun a -> Num (if nth_num a 0 <= nth_num a 1 then 1.0 else 0.0));
+  add "lte" (fun a -> Num (if nth_num a 0 <= nth_num a 1 then 1.0 else 0.0));
   add "and" (fun a -> Num (if is_truthy (nth_val a 0) && is_truthy (nth_val a 1) then 1.0 else 0.0));
   add "or" (fun a -> Num (if is_truthy (nth_val a 0) || is_truthy (nth_val a 1) then 1.0 else 0.0));
   add "not" (fun a -> Num (if is_truthy (nth_val a 0) then 0.0 else 1.0));
@@ -2331,8 +3120,32 @@ let register_builtins () =
       for i = Array.length ss - 1 downto 1 do
         caps := Str ss.(i) :: !caps
       done;
-      Arr (dynarr_of_list !caps)
-    with Not_found -> Arr (dynarr_empty ()));
+	      Arr (dynarr_of_list !caps)
+	    with Not_found -> Arr (dynarr_empty ()));
+  add "rx-sub" (fun a ->
+    let text = nth_str a 0 in
+    let replacement = nth_str a 2 in
+    let flags = nth_str a 3 in
+    let rex =
+      match nth_val a 1 with
+      | Rex r -> r
+      | v ->
+        let pat = to_str v in
+        let pcre_flags = ref [] in
+        if String.contains flags 'i' then pcre_flags := `CASELESS :: !pcre_flags;
+        if String.contains flags 'm' then pcre_flags := `MULTILINE :: !pcre_flags;
+        if String.contains flags 's' then pcre_flags := `DOTALL :: !pcre_flags;
+        (try Pcre.regexp ~flags:!pcre_flags pat
+         with Pcre.Error _ ->
+           failwith "rx-sub: invalid regex pattern")
+    in
+    try
+      if String.contains flags 'g' then
+        Str (Pcre.replace ~rex ~templ:replacement text)
+      else
+        Str (Pcre.replace_first ~rex ~templ:replacement text)
+    with Pcre.Error _ ->
+      failwith "rx-sub: invalid regex pattern");
 
   (* Array *)
   add "array" (fun a -> Arr (dynarr_of_list a));
@@ -2351,12 +3164,34 @@ let register_builtins () =
     | Some v -> v
     | None -> Nil);
   add "get" (fun a ->
-    let r = require_arr "get" (nth_val a 0) in
-    let idx = int_of_float (nth_num a 1) in
-    (match dynarr_get r idx with Some v -> v | None -> Nil));
+    match nth_val a 0 with
+    | Arr r ->
+      let idx = int_of_float (nth_num a 1) in
+      (match dynarr_get r idx with Some v -> v | None -> Nil)
+    | Dict h ->
+      let key = nth_str a 1 in
+      (match hashtbl_find_opt h key with Some v -> v | None -> Nil)
+    | _ ->
+      failwith "get: first argument must be an array");
   add "len" (fun a ->
     let r = require_arr "len" (nth_val a 0) in
     Num (float_of_int r.len));
+  add "set-index" (fun a ->
+    let idxv = nth_val a 1 in
+    let value = nth_val a 2 in
+    (match nth_val a 0 with
+    | Arr r ->
+      let idx = int_of_float (to_num idxv) in
+      if idx < 0 then failwith "set-index: negative array index";
+      dynarr_ensure_capacity r (idx + 1);
+      if idx >= r.len then r.len <- idx + 1;
+      r.data.(idx) <- value;
+      value
+    | Dict h ->
+      Hashtbl.replace h (to_str idxv) value;
+      value
+    | _ ->
+      failwith "set-index: first argument must be an array or dict"));
 
   (* Dict *)
   add "dict" (fun a ->
@@ -2575,6 +3410,13 @@ let register_builtins () =
       | other -> out := other :: !out
     ) r;
     Arr (dynarr_of_list (List.rev !out)));
+  add "make-fun-ref" (fun a ->
+    let name = nth_str a 0 in
+    if name = "" then failwith "make-fun-ref: missing function name";
+    let subs = module_subs_ref !current_module in
+    if not (Hashtbl.mem subs name) then
+      failwith ("make-fun-ref: unknown function '" ^ name ^ "'");
+    LambdaSub (!current_module, name));
   add "sort-by" (fun a ->
     let r = require_arr "sort-by" (nth_val a 0) in
     let _ = require_lambda "sort-by" (nth_val a 1) in

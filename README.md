@@ -23,15 +23,15 @@ Target syntax direction:
 - `fun` for anonymous functions
 
 Status note:
-- Perl runtime accepts `def`, `let`, and `defun` (`defn` removed).
-- Perl runtime accepts `fun(...)` (`fn(...)` removed).
-- Perl runtime accepts Mini Shelm Light statement forms:
+- Perl and OCaml runtimes accept `def`, `let`, and `defun` (`defn` removed).
+- Perl and OCaml runtimes accept `fun(...)` (`fn(...)` removed).
+- Perl and OCaml runtimes accept Mini Shelm Light statement forms:
   - `if <expr> then ... [elif <expr> then ...] [else ...] end`
   - `while <expr> do ... end`
   - `foreach <name> in <expr> do ... end`
   - `<name> = <expr>` and `<name>[<idx>] = <expr>`
   - `break`, `continue`, `return <expr>`
-- Perl runtime accepts Mini Shelm Light expression forms:
+- Perl and OCaml runtimes accept Mini Shelm Light expression forms:
   - calls: `f(...)` and statement-call sugar `f a, b`
   - block lambdas: `fun [params] do ... end`
   - infix operators: `== != < > <= >= + - * / % ++ and or not`
