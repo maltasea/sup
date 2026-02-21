@@ -46,9 +46,12 @@ type node =
   | NReturn of int * expr option
   | NIf of int * expr * node list * node list
   | NUnless of int * expr * node list * node list
+  | NWhile of int * expr * node list
+  | NSwitch of int * expr * (expr * node list) list * node list
   | NSubDef of int * string * string list * node list * bool
   | NAlias of int * string * string
   | NForeach of int * string * string * node list
+  | NFori of int * string * string * node list
   | NCall of int * expr
 
 type sub_def = { params: string list; body: node list; recursive: bool }
@@ -132,6 +135,27 @@ let rec list_nth_opt lst n =
   | x :: _ when n = 0 -> Some x
   | _ :: tl when n > 0 -> list_nth_opt tl (n - 1)
   | _ -> None
+
+let getenv_opt name =
+  try Some (Sys.getenv name) with Not_found -> None
+
+let parse_positive_int_env name default =
+  match getenv_opt name with
+  | None -> default
+  | Some raw ->
+    let raw = String.trim raw in
+    if raw = "" then default
+    else
+      try
+        let n = int_of_string raw in
+        if n > 0 then n else default
+      with Failure _ -> default
+
+let max_call_depth =
+  parse_positive_int_env "SLUP_MAX_CALL_DEPTH" 1024
+
+let max_capture_bytes =
+  parse_positive_int_env "SLUP_MAX_CAPTURE_BYTES" (16 * 1024 * 1024)
 
 let dynarr_empty () = { data = [||]; len = 0 }
 
@@ -308,6 +332,9 @@ let re_global_decl =
 let re_if = Str.regexp {|^if[ 	]+\(.*\)$|}
 let re_when = Str.regexp {|^when[ 	]+\(.*\)$|}
 let re_unless = Str.regexp {|^unless[ 	]+\(.*\)$|}
+let re_while = Str.regexp {|^while[ 	]+\(.*\)$|}
+let re_switch = Str.regexp {|^switch[ 	]+\(.*\)$|}
+let re_case = Str.regexp {|^case[ 	]+\(.*\)$|}
 let re_sub_def =
   Str.regexp {|^\(rec\|sub\)[ 	]+\([^ 	(]+\)[ 	]*(\([^)]*\))[ 	]*$|}
 let re_alias =
@@ -316,6 +343,9 @@ let re_alias =
 let re_foreach =
   Str.regexp
     {|^foreach[ 	]+\$\([^ 	]+\)[ 	]+@\([^ 	]+\)[ 	]*$|}
+let re_fori =
+  Str.regexp
+    {|^fori[ 	]+\$\([^ 	]+\)[ 	]+@\([^ 	]+\)[ 	]*$|}
 let re_return = Str.regexp {|^return[ 	]*(\(.*\))[ 	]*$|}
 let re_bare_call = Str.regexp {|^[^ 	(][^ 	(]*[ 	]*(|}
 let re_number = Str.regexp {|^-?[0-9]+\(\.[0-9]+\)?$|}
@@ -958,6 +988,7 @@ let split_dict_pair pair =
 type block_term =
   | Block_end
   | Block_else
+  | Block_case
 
 let parse_prefixed_symbol expr prefix =
   let len = String.length expr in
@@ -1078,7 +1109,53 @@ let rec compile_expr raw_expr =
     | None ->
       failwith ("Cannot evaluate expression: '" ^ expr ^ "'")
 
-let rec compile_block lines start allow_else =
+let rec compile_switch lines start switch_line =
+  let len = Array.length lines in
+  let rec skip_non_code i =
+    if i >= len then i
+    else if is_blank_or_comment (String.trim lines.(i)) then skip_non_code (i + 1)
+    else i
+  in
+  let rec parse_cases i cases_rev =
+    let i = skip_non_code i in
+    if i >= len then
+      failwith (Printf.sprintf "switch without matching end on line %d" switch_line);
+    let line = String.trim lines.(i) in
+    if re_matches re_case line then begin
+      let cexpr = compile_expr (Str.matched_group 1 line) in
+      let case_body, next_i, term = compile_block lines (i + 1) true true in
+      let cases_rev = (cexpr, case_body) :: cases_rev in
+      match term with
+      | Some Block_case ->
+        parse_cases next_i cases_rev
+      | Some Block_else ->
+        let else_body, after_else, term2 = compile_block lines next_i false false in
+        (match term2 with
+        | Some Block_end ->
+          (List.rev cases_rev, else_body, after_else)
+        | _ ->
+          failwith (Printf.sprintf "switch without matching end on line %d" switch_line))
+      | Some Block_end ->
+        (List.rev cases_rev, [], next_i)
+      | None ->
+        failwith (Printf.sprintf "switch without matching end on line %d" switch_line)
+    end else if is_else line then begin
+      let else_body, next_i, term = compile_block lines (i + 1) false false in
+      match term with
+      | Some Block_end ->
+        (List.rev cases_rev, else_body, next_i)
+      | Some Block_case ->
+        failwith (Printf.sprintf "case without matching switch on line %d" (next_i + 1))
+      | _ ->
+        failwith (Printf.sprintf "switch without matching end on line %d" switch_line)
+    end else if is_end line then
+      (List.rev cases_rev, [], i + 1)
+    else
+      failwith (Printf.sprintf "switch expects case/else/end on line %d" (i + 1))
+  in
+  parse_cases start []
+
+and compile_block lines start allow_else allow_case =
   let len = Array.length lines in
   let rec loop i acc =
     if i >= len then
@@ -1087,6 +1164,11 @@ let rec compile_block lines start allow_else =
       let line = String.trim lines.(i) in
       if is_blank_or_comment line then
         loop (i + 1) acc
+      else if re_matches re_case line then
+        if allow_case then
+          (List.rev acc, i, Some Block_case)
+        else
+          failwith (Printf.sprintf "case without matching switch on line %d" (i + 1))
       else if is_else line then
         if allow_else then
           (List.rev acc, i + 1, Some Block_else)
@@ -1134,57 +1216,84 @@ let rec compile_block lines start allow_else =
       else if re_matches re_if line then
         let cond = Str.matched_group 1 line in
         let cexpr = compile_expr cond in
-        let true_body, next_i, term = compile_block lines (i + 1) true in
+        let true_body, next_i, term = compile_block lines (i + 1) true false in
         begin
           match term with
           | Some Block_end ->
             loop next_i (NIf (i + 1, cexpr, true_body, []) :: acc)
           | Some Block_else ->
-            let false_body, after_false, term2 = compile_block lines next_i false in
+            let false_body, after_false, term2 = compile_block lines next_i false false in
             (match term2 with
             | Some Block_end ->
               loop after_false (NIf (i + 1, cexpr, true_body, false_body) :: acc)
+            | Some Block_case ->
+              failwith (Printf.sprintf "case without matching switch on line %d" (next_i + 1))
             | _ ->
               failwith (Printf.sprintf "if without matching end on line %d" (i + 1)))
+          | Some Block_case ->
+            failwith (Printf.sprintf "case without matching switch on line %d" (next_i + 1))
           | None ->
             failwith (Printf.sprintf "if without matching end on line %d" (i + 1))
         end
       else if re_matches re_when line then
         let cond = Str.matched_group 1 line in
         let cexpr = compile_expr cond in
-        let true_body, next_i, term = compile_block lines (i + 1) true in
+        let true_body, next_i, term = compile_block lines (i + 1) true false in
         begin
           match term with
           | Some Block_end ->
             loop next_i (NIf (i + 1, cexpr, true_body, []) :: acc)
           | Some Block_else ->
-            let false_body, after_false, term2 = compile_block lines next_i false in
+            let false_body, after_false, term2 = compile_block lines next_i false false in
             (match term2 with
             | Some Block_end ->
               loop after_false (NIf (i + 1, cexpr, true_body, false_body) :: acc)
+            | Some Block_case ->
+              failwith (Printf.sprintf "case without matching switch on line %d" (next_i + 1))
             | _ ->
               failwith (Printf.sprintf "when without matching end on line %d" (i + 1)))
+          | Some Block_case ->
+            failwith (Printf.sprintf "case without matching switch on line %d" (next_i + 1))
           | None ->
             failwith (Printf.sprintf "when without matching end on line %d" (i + 1))
         end
       else if re_matches re_unless line then
         let cond = Str.matched_group 1 line in
         let cexpr = compile_expr cond in
-        let true_body, next_i, term = compile_block lines (i + 1) true in
+        let true_body, next_i, term = compile_block lines (i + 1) true false in
         begin
           match term with
           | Some Block_end ->
             loop next_i (NUnless (i + 1, cexpr, true_body, []) :: acc)
           | Some Block_else ->
-            let false_body, after_false, term2 = compile_block lines next_i false in
+            let false_body, after_false, term2 = compile_block lines next_i false false in
             (match term2 with
             | Some Block_end ->
               loop after_false (NUnless (i + 1, cexpr, true_body, false_body) :: acc)
+            | Some Block_case ->
+              failwith (Printf.sprintf "case without matching switch on line %d" (next_i + 1))
             | _ ->
               failwith (Printf.sprintf "unless without matching end on line %d" (i + 1)))
+          | Some Block_case ->
+            failwith (Printf.sprintf "case without matching switch on line %d" (next_i + 1))
           | None ->
             failwith (Printf.sprintf "unless without matching end on line %d" (i + 1))
         end
+      else if re_matches re_while line then
+        let cond = Str.matched_group 1 line in
+        let cexpr = compile_expr cond in
+        let body, next_i, term = compile_block lines (i + 1) false false in
+        (match term with
+        | Some Block_end ->
+          loop next_i (NWhile (i + 1, cexpr, body) :: acc)
+        | Some Block_case ->
+          failwith (Printf.sprintf "case without matching switch on line %d" (next_i + 1))
+        | _ ->
+          failwith (Printf.sprintf "while without matching end on line %d" (i + 1)))
+      else if re_matches re_switch line then
+        let switch_expr = compile_expr (Str.matched_group 1 line) in
+        let cases, else_body, next_i = compile_switch lines (i + 1) (i + 1) in
+        loop next_i (NSwitch (i + 1, switch_expr, cases, else_body) :: acc)
       else if re_matches re_sub_def line then
         let kind = Str.matched_group 1 line in
         let name = Str.matched_group 2 line in
@@ -1203,14 +1312,16 @@ let rec compile_block lines start allow_else =
                   p
               in
               if not (is_local_name p) then
-                failwith ("Invalid parameter name '$" ^ p ^ "' (locals must be lowercase)");
+                  failwith ("Invalid parameter name '$" ^ p ^ "' (locals must be lowercase)");
               Some p
           ) (String.split_on_char ',' raw_params)
         in
-        let body, next_i, term = compile_block lines (i + 1) false in
+        let body, next_i, term = compile_block lines (i + 1) false false in
         (match term with
         | Some Block_end ->
           loop next_i (NSubDef (i + 1, name, params, body, kind = "rec") :: acc)
+        | Some Block_case ->
+          failwith (Printf.sprintf "case without matching switch on line %d" (next_i + 1))
         | _ ->
           failwith (Printf.sprintf "%s without matching end on line %d" kind (i + 1)))
       else if re_matches re_alias line then
@@ -1224,12 +1335,27 @@ let rec compile_block lines start allow_else =
         let arrname = Str.matched_group 2 line in
         if not (is_global_name var || is_local_name var) then
           failwith ("Invalid local variable name '$" ^ var ^ "' (locals must be lowercase)");
-        let body, next_i, term = compile_block lines (i + 1) false in
+        let body, next_i, term = compile_block lines (i + 1) false false in
         (match term with
         | Some Block_end ->
           loop next_i (NForeach (i + 1, var, arrname, body) :: acc)
+        | Some Block_case ->
+          failwith (Printf.sprintf "case without matching switch on line %d" (next_i + 1))
         | _ ->
           failwith (Printf.sprintf "foreach without matching end on line %d" (i + 1)))
+      else if re_matches re_fori line then
+        let var = Str.matched_group 1 line in
+        let arrname = Str.matched_group 2 line in
+        if not (is_global_name var || is_local_name var) then
+          failwith ("Invalid local variable name '$" ^ var ^ "' (locals must be lowercase)");
+        let body, next_i, term = compile_block lines (i + 1) false false in
+        (match term with
+        | Some Block_end ->
+          loop next_i (NFori (i + 1, var, arrname, body) :: acc)
+        | Some Block_case ->
+          failwith (Printf.sprintf "case without matching switch on line %d" (next_i + 1))
+        | _ ->
+          failwith (Printf.sprintf "fori without matching end on line %d" (i + 1)))
       else if re_matches re_bare_call line then
         loop (i + 1) (NCall (i + 1, compile_expr line) :: acc)
       else
@@ -1239,11 +1365,13 @@ let rec compile_block lines start allow_else =
 
 let compile_program lines =
   let arr = Array.of_list lines in
-  let nodes, next_i, term = compile_block arr 0 false in
+  let nodes, next_i, term = compile_block arr 0 false false in
   match term with
   | None -> nodes
   | Some Block_else ->
     failwith (Printf.sprintf "else without matching if on line %d" next_i)
+  | Some Block_case ->
+    failwith (Printf.sprintf "case without matching switch on line %d" (next_i + 1))
   | Some Block_end ->
     failwith (Printf.sprintf "end without matching block on line %d" next_i)
 
@@ -1345,6 +1473,12 @@ let rec eval_expr = function
         if active_count > 0 && not sub.recursive then
           failwith (with_line_context ("recursion is not allowed for sub '" ^ sub_name ^ "'; declare it with rec"));
         let saved_depth = !call_depth in
+        if saved_depth + 1 > max_call_depth then
+          failwith
+            (with_line_context
+               (Printf.sprintf
+                  "maximum call depth exceeded (%d); set SLUP_MAX_CALL_DEPTH to override"
+                  max_call_depth));
         let saved_returning = !returning in
         let saved_module = !current_module in
         push_module_var_frame target_module;
@@ -1458,6 +1592,26 @@ and exec_node = function
   | NUnless (_, cond_expr, true_body, false_body) ->
     let cond = eval_expr cond_expr in
     if is_truthy cond then run_nodes false_body else run_nodes true_body
+  | NWhile (_, cond_expr, body) ->
+    let rec run_loop () =
+      if !returning then ()
+      else if is_truthy (eval_expr cond_expr) then begin
+        run_nodes body;
+        run_loop ()
+      end
+    in
+    run_loop ()
+  | NSwitch (_, switch_expr, cases, else_body) ->
+    let switch_val = eval_expr switch_expr in
+    let rec run_cases = function
+      | [] -> run_nodes else_body
+      | (case_expr, body) :: rest ->
+        if to_str switch_val = to_str (eval_expr case_expr) then
+          run_nodes body
+        else
+          run_cases rest
+    in
+    run_cases cases
   | NSubDef (_, name, params, body, recursive) ->
     Hashtbl.replace (module_subs_ref !current_module) name { params; body; recursive }
   | NAlias (_, new_name, old_name) ->
@@ -1512,6 +1666,49 @@ and exec_node = function
       end
     in
     run_each 0
+  | NFori (line_no, var, arrname, body) ->
+    if not (is_global_name var || is_local_name var) then
+      failwith ("Invalid local variable name '$" ^ var ^ "' (locals must be lowercase)");
+    let arr_val =
+      match split_qualified_symbol arrname with
+      | Some (Some module_name, name) ->
+        if is_global_name name then
+          (require_declared_global name "expression" "read";
+          get_global_array name)
+        else if is_local_name name then
+          get_module_array module_name name
+        else
+          failwith ("Invalid local array name '@" ^ name ^ "' (locals must be lowercase)")
+      | Some (None, name) ->
+        if is_global_name name then
+          (require_declared_global name "expression" "read";
+          get_global_array name)
+        else if is_local_name name then
+          get_module_array !current_module name
+        else
+          failwith ("Invalid local array name '@" ^ name ^ "' (locals must be lowercase)")
+      | None ->
+        failwith (Printf.sprintf "Syntax error on line %d: fori $%s @%s" line_no var arrname)
+    in
+    let arr_snapshot = match arr_val with
+      | Arr r -> Array.sub r.data 0 r.len
+      | _ -> [||]
+    in
+    let rec run_each idx =
+      if idx >= Array.length arr_snapshot || !returning then ()
+      else begin
+        let elem = arr_snapshot.(idx) in
+        if is_global_name var then begin
+          require_declared_global var (Printf.sprintf "line %d" line_no) "assignment";
+          Hashtbl.replace globals var elem
+        end else
+          module_var_set !current_module var elem;
+        module_var_set !current_module "i" (Num (float_of_int idx));
+        run_nodes body;
+        run_each (idx + 1)
+      end
+    in
+    run_each 0
   | NCall (_, expr) ->
     ignore (eval_expr expr)
 
@@ -1524,9 +1721,12 @@ and node_line_no = function
   | NReturn (line_no, _)
   | NIf (line_no, _, _, _)
   | NUnless (line_no, _, _, _)
+  | NWhile (line_no, _, _)
+  | NSwitch (line_no, _, _, _)
   | NSubDef (line_no, _, _, _, _)
   | NAlias (line_no, _, _)
   | NForeach (line_no, _, _, _)
+  | NFori (line_no, _, _, _)
   | NCall (line_no, _) ->
     line_no
 
@@ -1578,14 +1778,24 @@ let require_lambda fname = function
 let invoke_lambda fn args =
   match fn with
   | Lambda (params, body) ->
+    let saved_depth = !call_depth in
+    if saved_depth + 1 > max_call_depth then
+      failwith
+        (Printf.sprintf
+           "maximum call depth exceeded (%d); set SLUP_MAX_CALL_DEPTH to override"
+           max_call_depth);
     push_module_var_frame !current_module;
+    call_depth := saved_depth + 1;
     List.iteri (fun i p ->
       let v = if i < List.length args then List.nth args i else Nil in
       module_var_set !current_module p v
     ) params;
     let result = try eval_expr body with exn ->
-      pop_module_var_frame !current_module; raise exn in
+      pop_module_var_frame !current_module;
+      call_depth := saved_depth;
+      raise exn in
     pop_module_var_frame !current_module;
+    call_depth := saved_depth;
     result
   | _ -> failwith "expected a function"
 
@@ -1605,6 +1815,12 @@ let has_unsafe_shell_metacharacters s =
   in
   loop 0
 
+let safe_close_fd fd =
+  try Unix.close fd with Unix.Unix_error _ -> ()
+
+let safe_remove_file path =
+  try Sys.remove path with _ -> ()
+
 let slurp_file path =
   let ic = open_in_bin path in
   let n = in_channel_length ic in
@@ -1612,6 +1828,15 @@ let slurp_file path =
   really_input ic buf 0 n;
   close_in ic;
   Bytes.to_string buf
+
+let slurp_file_capped ctx path =
+  let st = Unix.stat path in
+  if st.Unix.st_size > max_capture_bytes then
+    failwith
+      (Printf.sprintf
+         "%s: captured output exceeds %d bytes (set SLUP_MAX_CAPTURE_BYTES to override)"
+         ctx max_capture_bytes);
+  slurp_file path
 
 let normalize_command_argv ctx = function
   | Arr r ->
@@ -1743,34 +1968,56 @@ let run_command_capture cmdv timeout_s =
   let cmd = normalize_command_argv "run" cmdv in
   let out_path = Filename.temp_file "slup-run-out" ".tmp" in
   let err_path = Filename.temp_file "slup-run-err" ".tmp" in
-  let devnull_fd = Unix.openfile "/dev/null" [Unix.O_RDONLY] 0 in
-  let out_fd = Unix.openfile out_path [Unix.O_CREAT; Unix.O_TRUNC; Unix.O_WRONLY] 0o600 in
-  let err_fd = Unix.openfile err_path [Unix.O_CREAT; Unix.O_TRUNC; Unix.O_WRONLY] 0o600 in
-  let pid =
-    Unix.create_process_env cmd.(0) cmd (Unix.environment ()) devnull_fd out_fd err_fd
+  let devnull_fd : Unix.file_descr option ref = ref None in
+  let out_fd : Unix.file_descr option ref = ref None in
+  let err_fd : Unix.file_descr option ref = ref None in
+  let cleanup () =
+    (match !devnull_fd with Some fd -> safe_close_fd fd | None -> ());
+    (match !out_fd with Some fd -> safe_close_fd fd | None -> ());
+    (match !err_fd with Some fd -> safe_close_fd fd | None -> ());
+    devnull_fd := None;
+    out_fd := None;
+    err_fd := None;
+    safe_remove_file out_path;
+    safe_remove_file err_path
   in
-  Unix.close devnull_fd;
-  Unix.close out_fd;
-  Unix.close err_fd;
-  let statuses, timed_out = wait_for_children [pid] timeout_s in
-  let status =
-    match hashtbl_find_opt statuses pid with
-    | Some s -> s
-    | None -> Unix.WEXITED 1
-  in
-  let code = if timed_out then 124 else status_to_code status in
-  let out = slurp_file out_path in
-  let err =
-    let base = slurp_file err_path in
-    if timed_out then
-      base ^ "run: timed out after " ^
-      format_timeout_seconds (match timeout_s with Some x -> x | None -> 0.0) ^ "s\n"
-    else
-      base
-  in
-  Sys.remove out_path;
-  Sys.remove err_path;
-  command_result_dict ~code ~out ~err
+  try
+    devnull_fd := Some (Unix.openfile "/dev/null" [Unix.O_RDONLY] 0);
+    out_fd := Some (Unix.openfile out_path [Unix.O_CREAT; Unix.O_TRUNC; Unix.O_WRONLY] 0o600);
+    err_fd := Some (Unix.openfile err_path [Unix.O_CREAT; Unix.O_TRUNC; Unix.O_WRONLY] 0o600);
+    let pid =
+      Unix.create_process_env cmd.(0) cmd (Unix.environment ())
+        (match !devnull_fd with Some fd -> fd | None -> assert false)
+        (match !out_fd with Some fd -> fd | None -> assert false)
+        (match !err_fd with Some fd -> fd | None -> assert false)
+    in
+    (match !devnull_fd with Some fd -> safe_close_fd fd | None -> ());
+    (match !out_fd with Some fd -> safe_close_fd fd | None -> ());
+    (match !err_fd with Some fd -> safe_close_fd fd | None -> ());
+    devnull_fd := None;
+    out_fd := None;
+    err_fd := None;
+    let statuses, timed_out = wait_for_children [pid] timeout_s in
+    let status =
+      match hashtbl_find_opt statuses pid with
+      | Some s -> s
+      | None -> Unix.WEXITED 1
+    in
+    let code = if timed_out then 124 else status_to_code status in
+    let out = slurp_file_capped "run" out_path in
+    let err =
+      let base = slurp_file_capped "run" err_path in
+      if timed_out then
+        base ^ "run: timed out after " ^
+        format_timeout_seconds (match timeout_s with Some x -> x | None -> 0.0) ^ "s\n"
+      else
+        base
+    in
+    cleanup ();
+    command_result_dict ~code ~out ~err
+  with exn ->
+    cleanup ();
+    raise exn
 
 let run_pipeline_capture commands timeout_s =
   if commands = [] then
@@ -1780,69 +2027,95 @@ let run_pipeline_capture commands timeout_s =
   let pids = ref [] in
   let last_pid = ref None in
   let prev_read = ref None in
-  List.iteri (fun i cmd ->
-    let next_pipe =
-      if i < List.length commands - 1 then
-        let r, w = Unix.pipe () in
-        Some (r, w)
+  let close_prev_read () =
+    match !prev_read with
+    | Some fd ->
+      safe_close_fd fd;
+      prev_read := None
+    | None -> ()
+  in
+  let cleanup_files () =
+    close_prev_read ();
+    safe_remove_file out_path;
+    safe_remove_file err_path
+  in
+  try
+    List.iteri (fun i cmd ->
+      let next_pipe =
+        if i < List.length commands - 1 then
+          let r, w = Unix.pipe () in
+          Some (r, w)
+        else
+          None
+      in
+      let stdin_fd =
+        match !prev_read with
+        | Some fd -> fd
+        | None -> Unix.openfile "/dev/null" [Unix.O_RDONLY] 0
+      in
+      let stdout_fd =
+        match next_pipe with
+        | Some (_, w) -> w
+        | None -> Unix.openfile out_path [Unix.O_CREAT; Unix.O_TRUNC; Unix.O_WRONLY] 0o600
+      in
+      let stderr_fd =
+        Unix.openfile err_path [Unix.O_CREAT; Unix.O_APPEND; Unix.O_WRONLY] 0o600
+      in
+      try
+        let pid =
+          Unix.create_process_env cmd.(0) cmd (Unix.environment ()) stdin_fd stdout_fd stderr_fd
+        in
+        pids := pid :: !pids;
+        last_pid := Some pid;
+        safe_close_fd stderr_fd;
+        safe_close_fd stdout_fd;
+        (match !prev_read with
+        | Some fd -> safe_close_fd fd
+        | None -> safe_close_fd stdin_fd);
+        prev_read :=
+          (match next_pipe with
+          | Some (r, _) -> Some r
+          | None -> None)
+      with exn ->
+        safe_close_fd stderr_fd;
+        safe_close_fd stdout_fd;
+        safe_close_fd stdin_fd;
+        (match next_pipe with
+        | Some (r, _) -> safe_close_fd r
+        | None -> ());
+        raise exn
+    ) commands;
+    close_prev_read ();
+    let statuses = Hashtbl.create 8 in
+    let waited, timed_out = wait_for_children !pids timeout_s in
+    Hashtbl.iter (fun pid status -> Hashtbl.replace statuses pid status) waited;
+    let last_status =
+      match !last_pid with
+      | Some pid ->
+        (match hashtbl_find_opt statuses pid with
+        | Some status -> status
+        | None -> Unix.WEXITED 1)
+      | None -> Unix.WEXITED 1
+    in
+    let code = if timed_out then 124 else status_to_code last_status in
+    let out = slurp_file_capped "pipe" out_path in
+    let err =
+      let base = slurp_file_capped "pipe" err_path in
+      if timed_out then
+        base ^ "pipe: timed out after " ^
+        format_timeout_seconds (match timeout_s with Some x -> x | None -> 0.0) ^ "s\n"
       else
-        None
+        base
     in
-    let stdin_fd =
-      match !prev_read with
-      | Some fd -> fd
-      | None -> Unix.openfile "/dev/null" [Unix.O_RDONLY] 0
-    in
-    let stdout_fd =
-      match next_pipe with
-      | Some (_, w) -> w
-      | None -> Unix.openfile out_path [Unix.O_CREAT; Unix.O_TRUNC; Unix.O_WRONLY] 0o600
-    in
-    let stderr_fd =
-      Unix.openfile err_path [Unix.O_CREAT; Unix.O_APPEND; Unix.O_WRONLY] 0o600
-    in
-    let pid =
-      Unix.create_process_env cmd.(0) cmd (Unix.environment ()) stdin_fd stdout_fd stderr_fd
-    in
-    pids := pid :: !pids;
-    last_pid := Some pid;
-    Unix.close stderr_fd;
-    Unix.close stdout_fd;
-    (match !prev_read with
-    | Some fd -> Unix.close fd
-    | None -> Unix.close stdin_fd);
-    prev_read :=
-      (match next_pipe with
-      | Some (r, _) -> Some r
-      | None -> None)
-  ) commands;
-  (match !prev_read with
-  | Some fd -> Unix.close fd
-  | None -> ());
-  let statuses = Hashtbl.create 8 in
-  let waited, timed_out = wait_for_children !pids timeout_s in
-  Hashtbl.iter (fun pid status -> Hashtbl.replace statuses pid status) waited;
-  let last_status =
-    match !last_pid with
-    | Some pid ->
-      (match hashtbl_find_opt statuses pid with
-      | Some status -> status
-      | None -> Unix.WEXITED 1)
-    | None -> Unix.WEXITED 1
-  in
-  let code = if timed_out then 124 else status_to_code last_status in
-  let out = slurp_file out_path in
-  let err =
-    let base = slurp_file err_path in
-    if timed_out then
-      base ^ "pipe: timed out after " ^
-      format_timeout_seconds (match timeout_s with Some x -> x | None -> 0.0) ^ "s\n"
-    else
-      base
-  in
-  Sys.remove out_path;
-  Sys.remove err_path;
-  command_result_dict ~code ~out ~err
+    cleanup_files ();
+    command_result_dict ~code ~out ~err
+  with exn ->
+    if !pids <> [] then begin
+      kill_pids_gracefully !pids;
+      ignore (wait_for_children !pids (Some 0.2))
+    end;
+    cleanup_files ();
+    raise exn
 
 let dict_of_assoc pairs =
   let h = Hashtbl.create (max 8 (List.length pairs)) in

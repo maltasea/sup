@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
-use Test::More tests => 119;
+use Test::More tests => 141;
 use File::Path qw(make_path);
 use File::Temp qw(tempfile tempdir);
 use FindBin qw($Bin);
@@ -25,6 +25,22 @@ sub run_slup {
     print {$fh} $program;
     close $fh;
 
+    my $cmd = qq{"$slup" "$path" < /dev/null 2>&1};
+    my $out = `$cmd`;
+    my $status = $? >> 8;
+    return ($status, $out);
+}
+
+sub run_slup_env {
+    my ($env, $program) = @_;
+    my ($fh, $path) = tempfile(SUFFIX => '.slup', UNLINK => 1);
+    print {$fh} $program;
+    close $fh;
+
+    local %ENV = %ENV;
+    for my $k (keys %{$env}) {
+        $ENV{$k} = $env->{$k};
+    }
     my $cmd = qq{"$slup" "$path" < /dev/null 2>&1};
     my $out = `$cmd`;
     my $status = $? >> 8;
@@ -153,6 +169,116 @@ SLUP
 
 {
     my ($status, $out) = run_slup(<<'SLUP');
+set $x = 0
+while lt($x, 3)
+  set $x = add($x, 1)
+end
+print($x)
+SLUP
+    is($status, 0, 'while executes until condition becomes false (ocaml)');
+    is($out, "3\n", 'while re-evaluates condition per iteration (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+set $x = 7
+while lt($x, 3)
+  set $x = 0
+end
+print($x)
+SLUP
+    is($status, 0, 'while allows zero-iteration execution (ocaml)');
+    is($out, "7\n", 'while skips body when condition starts false (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+switch "b"
+case "a"
+  print("A")
+case "b"
+  print("B")
+case "b"
+  print("B2")
+else
+  print("E")
+end
+SLUP
+    is($status, 0, 'switch/case executes with matching branch (ocaml)');
+    is($out, "B\n", 'switch runs first matching case only (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+switch "z"
+case "a"
+  print("A")
+case "b"
+  print("B")
+else
+  print("E")
+end
+SLUP
+    is($status, 0, 'switch executes else when no case matches (ocaml)');
+    is($out, "E\n", 'switch else branch output (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+case "x"
+  print("x")
+end
+SLUP
+    ok($status != 0, 'case outside switch fails (ocaml)');
+    like($out, qr/case without matching switch/, 'case outside switch has clear error (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+switch "x"
+case "x"
+  print("x")
+SLUP
+    ok($status != 0, 'missing end in switch fails (ocaml)');
+    like($out, qr/switch without matching end/, 'missing switch end has clear error (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+set @xs = ["a", "b", "c"]
+fori $v @xs
+  print(concat($i, $v))
+end
+SLUP
+    is($status, 0, 'fori executes indexed iteration (ocaml)');
+    is($out, "0a\n1b\n2c\n", 'fori exposes $i index each iteration (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+set @xs = ["a", "b"]
+fori $v @xs
+  print($v)
+  push(@xs, "z")
+end
+print(len(@xs))
+SLUP
+    is($status, 0, 'fori executes with array mutation in loop body (ocaml)');
+    is($out, "a\nb\n4\n", 'fori iterates over snapshot while body can mutate source array (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
+set @x = [1, 2]
+fori $v @x
+  print($v)
+SLUP
+    ok($status != 0, 'missing end in fori fails (ocaml)');
+    like($out, qr/fori without matching end/, 'missing fori end has clear error (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup(<<'SLUP');
 sub count-down($n)
   if lt($n, 1)
     return(0)
@@ -243,6 +369,29 @@ read-file("")
 SLUP
     ok($status != 0, 'builtin runtime error fails with line context (ocaml)');
     like($out, qr/line 2: read-file: missing filename/, 'builtin runtime error reports line-prefixed error (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup_env({ SLUP_MAX_CALL_DEPTH => 6 }, <<'SLUP');
+rec dive($n)
+  if lt($n, 1)
+    return(0)
+  end
+  return(dive(sub($n, 1)))
+end
+print(dive(20))
+SLUP
+    ok($status != 0, 'configurable max call depth rejects overly deep recursion (ocaml)');
+    like($out, qr/maximum call depth exceeded/, 'call depth hardening error is clear (ocaml)');
+}
+
+{
+    my ($status, $out) = run_slup_env({ SLUP_MAX_CAPTURE_BYTES => 8 }, <<'SLUP');
+set %r = run(["/bin/sh", "-c", "printf 1234567890"])
+print(dict-get(%r, "out"))
+SLUP
+    ok($status != 0, 'run() fails when captured output exceeds configured cap (ocaml)');
+    like($out, qr/captured output exceeds/, 'captured-output hardening error is clear (ocaml)');
 }
 
 {
