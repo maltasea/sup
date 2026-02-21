@@ -1,4 +1,4 @@
-# simp benchmark baseline
+# slup benchmark baseline
 
 This file tracks a reference run for `bench/overhead-suite.pl`.
 
