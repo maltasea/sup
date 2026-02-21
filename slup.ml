@@ -1,4 +1,4 @@
-(* simp — a simple scripting language interpreter in OCaml *)
+(* slup — a simple scripting language interpreter in OCaml *)
 
 (* ============================================================
    Types
@@ -17,6 +17,11 @@ and dynarr = {
 }
 
 type sub_def = { params: string list; body: string list }
+type global_decl = {
+  required: bool;
+  has_default: bool;
+  default_expr: string option;
+}
 
 (* ============================================================
    Helpers
@@ -68,6 +73,8 @@ let module_subs : (string, (string, sub_def) Hashtbl.t) Hashtbl.t = Hashtbl.crea
 let module_dirs : (string, string) Hashtbl.t = Hashtbl.create 16
 
 let builtins : (string, value list -> value) Hashtbl.t = Hashtbl.create 64
+let global_decls : (string, global_decl) Hashtbl.t = Hashtbl.create 64
+let strict_globals_mode = ref false
 
 let hashtbl_find_opt tbl key =
   try Some (Hashtbl.find tbl key) with Not_found -> None
@@ -198,6 +205,8 @@ let re_set_dict =
   Str.regexp {|^set[ 	]+%\([^ 	=]+\)[ 	]*=[ 	]*\(.*\)$|}
 let re_global_set =
   Str.regexp {|^\$\([^ 	=]+\)[ 	]*=[ 	]*\(.*\)$|}
+let re_global_decl =
+  Str.regexp {|^global[ 	]+\$\([^ 	]+\)\([ 	]+\(.*\)\)?[ 	]*$|}
 let re_if = Str.regexp {|^if[ 	]+\(.*\)$|}
 let re_sub_def =
   Str.regexp {|^sub[ 	]+\([^ 	(]+\)[ 	]*(\([^)]*\))[ 	]*$|}
@@ -312,6 +321,50 @@ let is_local_name name =
     ) name;
     not !has_upper
 
+let global_decl_equal a b =
+  a.required = b.required
+  && a.has_default = b.has_default
+  && a.default_expr = b.default_expr
+
+let predeclare_global_if_missing name =
+  if not (Hashtbl.mem global_decls name) then
+    Hashtbl.replace global_decls name { required = false; has_default = false; default_expr = None }
+
+let require_declared_global name where verb =
+  if !strict_globals_mode && not (Hashtbl.mem global_decls name) then
+    failwith (Printf.sprintf "%s: undeclared global %s: '$%s'" where verb name)
+
+let parse_global_decl_modifier raw =
+  match raw with
+  | None -> { required = false; has_default = false; default_expr = None }
+  | Some raw ->
+    let raw = String.trim raw in
+    if raw = "" then
+      { required = false; has_default = false; default_expr = None }
+    else if raw = "required" then
+      { required = true; has_default = false; default_expr = None }
+    else if Str.string_match (Str.regexp {|^default[ 	]*(\(.*\))[ 	]*$|}) raw 0 then
+      let default_expr = Str.matched_group 1 raw in
+      { required = false; has_default = true; default_expr = Some default_expr }
+    else
+      failwith "global: expected 'required' or 'default(<expr>)'"
+
+let declare_global_spec name spec where =
+  if not (is_global_name name) then
+    failwith (Printf.sprintf "%s: global name must be uppercase: '$%s'" where name);
+  match hashtbl_find_opt global_decls name with
+  | Some existing ->
+    if not (global_decl_equal existing spec) then
+      failwith (Printf.sprintf "%s: conflicting declaration for '$%s'" where name)
+  | None ->
+    Hashtbl.replace global_decls name spec
+
+let validate_required_globals_runtime () =
+  Hashtbl.iter (fun name decl ->
+    if decl.required && not decl.has_default && not (Hashtbl.mem globals name) then
+      failwith (Printf.sprintf "required global is not assigned at runtime: '$%s'" name)
+  ) global_decls
+
 let split_qualified_symbol token =
   match String.split_on_char '/' token with
   | [name] when is_symbol_name name -> Some (None, name)
@@ -417,12 +470,12 @@ let resolve_load_path file =
       | Some d -> d
       | None -> "." in
     add (Filename.concat base_dir file);
-    if not (has_extension file) then add (Filename.concat base_dir (file ^ ".simp"));
+    if not (has_extension file) then add (Filename.concat base_dir (file ^ ".slup"));
     add file;
-    if not (has_extension file) then add (file ^ ".simp")
+    if not (has_extension file) then add (file ^ ".slup")
   end else begin
     add file;
-    if not (has_extension file) then add (file ^ ".simp")
+    if not (has_extension file) then add (file ^ ".slup")
   end;
   let rec pick = function
     | [] -> file
@@ -509,6 +562,183 @@ let parse_arglist str =
   if String.trim last <> "" then args := last :: !args;
   List.rev !args
 
+let parse_plain_string_literal raw =
+  let len = String.length raw in
+  let buf = Buffer.create len in
+  let i = ref 0 in
+  while !i < len do
+    let ch = raw.[!i] in
+    if ch = '\\' then begin
+      incr i;
+      if !i >= len then Buffer.add_char buf '\\'
+      else begin
+        let esc = raw.[!i] in
+        match esc with
+        | 'n' -> Buffer.add_char buf '\n'
+        | 't' -> Buffer.add_char buf '\t'
+        | 'r' -> Buffer.add_char buf '\r'
+        | '"' | '\\' | '$' -> Buffer.add_char buf esc
+        | _ -> Buffer.add_char buf '\\'; Buffer.add_char buf esc
+      end
+    end else
+      Buffer.add_char buf ch;
+    incr i
+  done;
+  Buffer.contents buf
+
+type static_load_target =
+  | Static_load_dynamic
+  | Static_load_literal of string
+
+type static_state = {
+  seen : (string, bool) Hashtbl.t;
+  decls : (string, global_decl) Hashtbl.t;
+  assigned : (string, bool) Hashtbl.t;
+  errors : string list ref;
+}
+
+let static_add_error state msg =
+  state.errors := msg :: !(state.errors)
+
+let resolve_load_path_from_file from_file target =
+  let candidates = ref [] in
+  let add p = candidates := p :: !candidates in
+  if is_relative_path target then begin
+    let base_dir = Filename.dirname from_file in
+    add (Filename.concat base_dir target);
+    if not (has_extension target) then add (Filename.concat base_dir (target ^ ".slup"));
+    add target;
+    if not (has_extension target) then add (target ^ ".slup")
+  end else begin
+    add target;
+    if not (has_extension target) then add (target ^ ".slup")
+  end;
+  let rec pick = function
+    | [] -> None
+    | c :: rest -> if file_exists c then Some c else pick rest
+  in
+  pick (List.rev !candidates)
+
+let parse_load_literal_target line =
+  match parse_func_call line with
+  | Some ("load", raw_args) ->
+    let target =
+      try
+        let args = parse_arglist raw_args in
+        match args with
+        | [arg] ->
+          let arg = String.trim arg in
+          if is_string_literal arg then
+            Static_load_literal
+              (parse_plain_string_literal (String.sub arg 1 (String.length arg - 2)))
+          else
+            Static_load_dynamic
+        | _ ->
+          Static_load_dynamic
+      with Failure _ ->
+        Static_load_dynamic
+    in
+    Some target
+  | _ -> None
+
+let rec static_scan_file path state =
+  if Hashtbl.mem state.seen path then ()
+  else begin
+    Hashtbl.replace state.seen path true;
+    let lines =
+      try
+        let ic = open_in path in
+        let lines = ref [] in
+        (try while true do lines := input_line ic :: !lines done
+         with End_of_file -> ());
+        close_in ic;
+        List.rev !lines
+      with Sys_error msg ->
+        static_add_error state (path ^ ": cannot open: " ^ msg);
+        []
+    in
+    let arr = Array.of_list lines in
+    for i = 0 to Array.length arr - 1 do
+      let line = String.trim arr.(i) in
+      if not (is_blank_or_comment line) then begin
+        let where = Printf.sprintf "%s:%d" path (i + 1) in
+        if re_matches re_global_decl line then begin
+          let name = Str.matched_group 1 line in
+          let raw_mod =
+            try Some (Str.matched_group 3 line)
+            with Not_found -> None
+          in
+          (try
+             let spec = parse_global_decl_modifier raw_mod in
+             if not (is_global_name name) then
+               static_add_error state
+                 (Printf.sprintf "%s: global name must be uppercase: '$%s'" where name)
+             else
+               (match hashtbl_find_opt state.decls name with
+               | Some existing ->
+                 if not (global_decl_equal existing spec) then
+                   static_add_error state
+                     (Printf.sprintf "%s: conflicting declaration for '$%s'" where name)
+               | None ->
+                 Hashtbl.replace state.decls name spec)
+           with Failure msg ->
+             static_add_error state (where ^ ": " ^ msg))
+        end else if re_matches re_global_set line then begin
+          let name = Str.matched_group 1 line in
+          if not (is_global_name name) then
+            static_add_error state
+              (Printf.sprintf "%s: global names must be uppercase: '$%s'" where name)
+          else
+            Hashtbl.replace state.assigned name true
+        end else if re_matches re_set_var line then begin
+          let name = Str.matched_group 1 line in
+          if is_global_name name then
+            Hashtbl.replace state.assigned name true
+          else if not (is_local_name name) then
+            static_add_error state
+              (Printf.sprintf "%s: local variable names must be lowercase: '$%s'" where name)
+        end;
+        match parse_load_literal_target line with
+        | Some Static_load_dynamic ->
+          static_add_error state
+            (Printf.sprintf "%s: static check requires load(\"literal\")" where)
+        | Some (Static_load_literal target) ->
+          (match resolve_load_path_from_file path target with
+          | Some resolved ->
+            static_scan_file resolved state
+          | None ->
+            static_add_error state
+              (Printf.sprintf "%s: cannot statically resolve load('%s')" where target))
+        | None -> ()
+      end
+    done
+  end
+
+let run_static_check entry =
+  let state = {
+    seen = Hashtbl.create 32;
+    decls = Hashtbl.create 32;
+    assigned = Hashtbl.create 32;
+    errors = ref [];
+  } in
+  static_scan_file entry state;
+  Hashtbl.iter (fun name _ ->
+    if not (Hashtbl.mem state.decls name) then
+      static_add_error state (Printf.sprintf "undeclared global assignment: '$%s'" name)
+  ) state.assigned;
+  Hashtbl.iter (fun name decl ->
+    if decl.required && not decl.has_default && not (Hashtbl.mem state.assigned name) then
+      static_add_error state
+        (Printf.sprintf "required global is never assigned: '$%s'" name)
+  ) state.decls;
+  let errs = List.rev !(state.errors) in
+  if errs = [] then
+    true
+  else begin
+    List.iter prerr_endline errs;
+    false
+  end
+
 let parse_string_literal raw =
   let len = String.length raw in
   let buf = Buffer.create len in
@@ -539,7 +769,8 @@ let parse_string_literal raw =
                 let name = String.sub raw (first_end + 1) (second_end - first_end - 1) in
                 let repl =
                   if is_global_name name then
-                    get_global_var name
+                    (require_declared_global name "string interpolation" "read";
+                    get_global_var name)
                   else if is_local_name name then
                     get_module_var first name
                   else
@@ -554,7 +785,8 @@ let parse_string_literal raw =
           if not qualified_done then begin
             let repl =
               if is_global_name first then
-                get_global_var first
+                (require_declared_global first "string interpolation" "read";
+                get_global_var first)
               else if is_local_name first then
                 let vars = module_vars_ref !current_module in
                 (match hashtbl_find_opt vars first with
@@ -637,14 +869,16 @@ let rec eval_expr raw_expr =
     match parse_prefixed_symbol expr '$' with
     | Some (Some module_name, name) ->
       if is_global_name name then
-        get_global_var name
+        (require_declared_global name "expression" "read";
+        get_global_var name)
       else if is_local_name name then
         get_module_var module_name name
       else
         failwith ("Invalid local variable name '$" ^ name ^ "' (locals must be lowercase)")
     | Some (None, name) ->
       if is_global_name name then
-        get_global_var name
+        (require_declared_global name "expression" "read";
+        get_global_var name)
       else if is_local_name name then
         let vars = module_vars_ref !current_module in
         (match hashtbl_find_opt vars name with
@@ -661,14 +895,16 @@ let rec eval_expr raw_expr =
     match parse_prefixed_symbol expr '@' with
     | Some (Some module_name, name) ->
       if is_global_name name then
-        get_global_array name
+        (require_declared_global name "expression" "read";
+        get_global_array name)
       else if is_local_name name then
         get_module_array module_name name
       else
         failwith ("Invalid local array name '@" ^ name ^ "' (locals must be lowercase)")
     | Some (None, name) ->
       if is_global_name name then
-        get_global_array name
+        (require_declared_global name "expression" "read";
+        get_global_array name)
       else if is_local_name name then
         get_module_array !current_module name
       else
@@ -682,14 +918,16 @@ let rec eval_expr raw_expr =
     match parse_prefixed_symbol expr '%' with
     | Some (Some module_name, name) ->
       if is_global_name name then
-        get_global_dict name
+        (require_declared_global name "expression" "read";
+        get_global_dict name)
       else if is_local_name name then
         get_module_dict module_name name
       else
         failwith ("Invalid local dict name '%" ^ name ^ "' (locals must be lowercase)")
     | Some (None, name) ->
       if is_global_name name then
-        get_global_dict name
+        (require_declared_global name "expression" "read";
+        get_global_dict name)
       else if is_local_name name then
         get_module_dict !current_module name
       else
@@ -803,13 +1041,35 @@ and exec_line lines i =
   (* blank / comment *)
   if is_blank_or_comment line then i + 1
 
+  (* global $NAME [required|default(...)] *)
+  else if re_matches re_global_decl line then begin
+    let name = Str.matched_group 1 line in
+    let raw_mod =
+      try Some (Str.matched_group 3 line)
+      with Not_found -> None
+    in
+    let where = Printf.sprintf "line %d" (i + 1) in
+    let spec =
+      try parse_global_decl_modifier raw_mod
+      with Failure msg -> failwith (where ^ ": " ^ msg)
+    in
+    declare_global_spec name spec where;
+    (match spec.default_expr with
+    | Some expr when spec.has_default && not (Hashtbl.mem globals name) ->
+      Hashtbl.replace globals name (eval_expr expr)
+    | _ -> ());
+    i + 1
+  end
+
   (* set $var = expr *)
   else if re_matches re_set_var line then begin
     let name = Str.matched_group 1 line in
     let expr = Str.matched_group 2 line in
-    if is_global_name name then
+    if is_global_name name then begin
+      require_declared_global name
+        (Printf.sprintf "line %d" (i + 1)) "assignment";
       Hashtbl.replace globals name (eval_expr expr)
-    else if is_local_name name then
+    end else if is_local_name name then
       Hashtbl.replace (module_vars_ref !current_module) name (eval_expr expr)
     else
       failwith ("Invalid local variable name '$" ^ name ^ "' (locals must be lowercase)");
@@ -822,6 +1082,8 @@ and exec_line lines i =
     let expr = Str.matched_group 2 line in
     if not (is_global_name name) then
       failwith ("Global names must be uppercase: '$" ^ name ^ "'");
+    require_declared_global name
+      (Printf.sprintf "line %d" (i + 1)) "assignment";
     Hashtbl.replace globals name (eval_expr expr);
     i + 1
   end
@@ -830,9 +1092,11 @@ and exec_line lines i =
   else if re_matches re_set_arr line then begin
     let name = Str.matched_group 1 line in
     let expr = Str.matched_group 2 line in
-    if is_global_name name then
+    if is_global_name name then begin
+      require_declared_global name
+        (Printf.sprintf "line %d" (i + 1)) "assignment";
       Hashtbl.replace global_arrays name (eval_expr expr)
-    else if is_local_name name then
+    end else if is_local_name name then
       Hashtbl.replace (module_arrays_ref !current_module) name (eval_expr expr)
     else
       failwith ("Invalid local array name '@" ^ name ^ "' (locals must be lowercase)");
@@ -843,9 +1107,11 @@ and exec_line lines i =
   else if re_matches re_set_dict line then begin
     let name = Str.matched_group 1 line in
     let expr = Str.matched_group 2 line in
-    if is_global_name name then
+    if is_global_name name then begin
+      require_declared_global name
+        (Printf.sprintf "line %d" (i + 1)) "assignment";
       Hashtbl.replace global_dicts name (eval_expr expr)
-    else if is_local_name name then
+    end else if is_local_name name then
       Hashtbl.replace (module_dicts_ref !current_module) name (eval_expr expr)
     else
       failwith ("Invalid local dict name '%" ^ name ^ "' (locals must be lowercase)");
@@ -970,14 +1236,18 @@ and exec_line lines i =
       match split_qualified_symbol arrname with
       | Some (Some module_name, name) ->
         if is_global_name name then
+          (require_declared_global name "expression" "read";
           get_global_array name
+          )
         else if is_local_name name then
           get_module_array module_name name
         else
           failwith ("Invalid local array name '@" ^ name ^ "' (locals must be lowercase)")
       | Some (None, name) ->
         if is_global_name name then
+          (require_declared_global name "expression" "read";
           get_global_array name
+          )
         else if is_local_name name then
           get_module_array !current_module name
         else
@@ -1005,16 +1275,19 @@ and exec_line lines i =
     if not !stop then
       failwith (Printf.sprintf "foreach without matching end on line %d" (i + 1));
     let body_lines = List.rev !body in
-    let rec run_each i =
-      if i >= Array.length arr_snapshot || !returning then ()
+    let line_no = i + 1 in
+    let rec run_each idx =
+      if idx >= Array.length arr_snapshot || !returning then ()
       else begin
-        let elem = arr_snapshot.(i) in
-        if is_global_name var then
+        let elem = arr_snapshot.(idx) in
+        if is_global_name var then begin
+          require_declared_global var
+            (Printf.sprintf "line %d" line_no) "assignment";
           Hashtbl.replace globals var elem
-        else
+        end else
           Hashtbl.replace (module_vars_ref !current_module) var elem;
         run_lines body_lines;
-        run_each (i + 1)
+        run_each (idx + 1)
       end
     in
     run_each 0;
@@ -1057,6 +1330,123 @@ let require_arr fname = function
 let require_dict fname = function
   | Dict h -> h
   | _ -> failwith (fname ^ ": first argument must be a dict")
+
+let status_to_code = function
+  | Unix.WEXITED n -> n
+  | Unix.WSIGNALED n -> 128 + n
+  | Unix.WSTOPPED n -> 128 + n
+
+let slurp_file path =
+  let ic = open_in_bin path in
+  let n = in_channel_length ic in
+  let buf = Bytes.create n in
+  really_input ic buf 0 n;
+  close_in ic;
+  Bytes.to_string buf
+
+let normalize_command_argv ctx = function
+  | Arr r ->
+    let parts = List.map to_str (dynarr_to_list r) in
+    if parts = [] then
+      failwith (ctx ^ ": command array must not be empty");
+    Array.of_list parts
+  | _ ->
+    failwith (ctx ^ ": command must be an array")
+
+let command_result_dict ~code ~out ~err =
+  let h = Hashtbl.create 3 in
+  Hashtbl.replace h "code" (Num (float_of_int code));
+  Hashtbl.replace h "out" (Str out);
+  Hashtbl.replace h "err" (Str err);
+  Dict h
+
+let run_command_capture cmdv =
+  let cmd = normalize_command_argv "run" cmdv in
+  let out_path = Filename.temp_file "slup-run-out" ".tmp" in
+  let err_path = Filename.temp_file "slup-run-err" ".tmp" in
+  let devnull_fd = Unix.openfile "/dev/null" [Unix.O_RDONLY] 0 in
+  let out_fd = Unix.openfile out_path [Unix.O_CREAT; Unix.O_TRUNC; Unix.O_WRONLY] 0o600 in
+  let err_fd = Unix.openfile err_path [Unix.O_CREAT; Unix.O_TRUNC; Unix.O_WRONLY] 0o600 in
+  let pid =
+    Unix.create_process_env cmd.(0) cmd (Unix.environment ()) devnull_fd out_fd err_fd
+  in
+  Unix.close devnull_fd;
+  Unix.close out_fd;
+  Unix.close err_fd;
+  let _, status = Unix.waitpid [] pid in
+  let code = status_to_code status in
+  let out = slurp_file out_path in
+  let err = slurp_file err_path in
+  Sys.remove out_path;
+  Sys.remove err_path;
+  command_result_dict ~code ~out ~err
+
+let run_pipeline_capture commands =
+  if commands = [] then
+    failwith "pipe: command list must not be empty";
+  let out_path = Filename.temp_file "slup-pipe-out" ".tmp" in
+  let err_path = Filename.temp_file "slup-pipe-err" ".tmp" in
+  let pids = ref [] in
+  let last_pid = ref None in
+  let prev_read = ref None in
+  List.iteri (fun i cmd ->
+    let next_pipe =
+      if i < List.length commands - 1 then
+        let r, w = Unix.pipe () in
+        Some (r, w)
+      else
+        None
+    in
+    let stdin_fd =
+      match !prev_read with
+      | Some fd -> fd
+      | None -> Unix.openfile "/dev/null" [Unix.O_RDONLY] 0
+    in
+    let stdout_fd =
+      match next_pipe with
+      | Some (_, w) -> w
+      | None -> Unix.openfile out_path [Unix.O_CREAT; Unix.O_TRUNC; Unix.O_WRONLY] 0o600
+    in
+    let stderr_fd =
+      Unix.openfile err_path [Unix.O_CREAT; Unix.O_APPEND; Unix.O_WRONLY] 0o600
+    in
+    let pid =
+      Unix.create_process_env cmd.(0) cmd (Unix.environment ()) stdin_fd stdout_fd stderr_fd
+    in
+    pids := pid :: !pids;
+    last_pid := Some pid;
+    Unix.close stderr_fd;
+    Unix.close stdout_fd;
+    (match !prev_read with
+    | Some fd -> Unix.close fd
+    | None -> Unix.close stdin_fd);
+    prev_read :=
+      (match next_pipe with
+      | Some (r, _) -> Some r
+      | None -> None)
+  ) commands;
+  (match !prev_read with
+  | Some fd -> Unix.close fd
+  | None -> ());
+  let statuses = Hashtbl.create 8 in
+  List.iter (fun pid ->
+    let _, status = Unix.waitpid [] pid in
+    Hashtbl.replace statuses pid status
+  ) !pids;
+  let last_status =
+    match !last_pid with
+    | Some pid ->
+      (match hashtbl_find_opt statuses pid with
+      | Some status -> status
+      | None -> Unix.WEXITED 1)
+    | None -> Unix.WEXITED 1
+  in
+  let code = status_to_code last_status in
+  let out = slurp_file out_path in
+  let err = slurp_file err_path in
+  Sys.remove out_path;
+  Sys.remove err_path;
+  command_result_dict ~code ~out ~err
 
 let register_builtins () =
   let add name f = Hashtbl.replace builtins name f in
@@ -1301,6 +1691,18 @@ let register_builtins () =
   add "die" (fun a ->
     let msg = nth_str a 0 in
     failwith (if msg = "" then "died" else msg));
+  add "run" (fun a ->
+    run_command_capture (nth_val a 0));
+  add "pipe" (fun a ->
+    let cmds_val = nth_val a 0 in
+    let commands =
+      match cmds_val with
+      | Arr r ->
+        List.map (normalize_command_argv "pipe") (dynarr_to_list r)
+      | _ ->
+        failwith "pipe: command list must be an array"
+    in
+    run_pipeline_capture commands);
   add "sh" (fun a ->
     let cmd = nth_str a 0 in
     if cmd = "" then failwith "sh: missing command";
@@ -1330,32 +1732,66 @@ let register_builtins () =
 let () =
   register_builtins ();
   run_lines_ref := run_lines;
+  let argv = ref (Array.to_list Sys.argv |> List.tl) in
+  let check_mode = ref false in
+  let rec consume_options () =
+    match !argv with
+    | opt :: rest when String.length opt > 0 && opt.[0] = '-' ->
+      if opt = "--check" then begin
+        check_mode := true;
+        argv := rest;
+        consume_options ()
+      end else if opt = "--strict-globals" then begin
+        strict_globals_mode := true;
+        argv := rest;
+        consume_options ()
+      end else
+        failwith ("Unknown option: " ^ opt)
+    | _ -> ()
+  in
+  consume_options ();
+  if !check_mode then begin
+    match !argv with
+    | file :: _ ->
+      if run_static_check file then exit 0 else exit 1
+    | [] ->
+      failwith "Usage: slup --check <file>"
+  end;
+  (match !argv with
+  | file :: _ when !strict_globals_mode ->
+    if not (run_static_check file) then exit 1
+  | _ -> ());
 
   let lines =
-    if Array.length Sys.argv > 1 then begin
-      let file = Sys.argv.(1) in
+    match !argv with
+    | file :: rest ->
       let ic = open_in file in
       let lines = ref [] in
       (try while true do lines := input_line ic :: !lines done
        with End_of_file -> ());
       close_in ic;
       Hashtbl.replace module_dirs main_module (Filename.dirname file);
-      (* Set $PATH and $ARG1..$ARGN, @ARGS as globals *)
+      predeclare_global_if_missing "PATH";
       Hashtbl.replace globals "PATH" (Str file);
-      let args = ref [] in
-      for i = Array.length Sys.argv - 1 downto 2 do
-        Hashtbl.replace globals (Printf.sprintf "ARG%d" (i - 1)) (Str Sys.argv.(i));
-        args := Str Sys.argv.(i) :: !args
-      done;
-      Hashtbl.replace global_arrays "ARGS" (Arr (dynarr_of_list !args));
+      let args =
+        List.mapi (fun idx arg ->
+          let n = idx + 1 in
+          let g = Printf.sprintf "ARG%d" n in
+          predeclare_global_if_missing g;
+          Hashtbl.replace globals g (Str arg);
+          Str arg
+        ) rest
+      in
+      predeclare_global_if_missing "ARGS";
+      Hashtbl.replace global_arrays "ARGS" (Arr (dynarr_of_list args));
       List.rev !lines
-    end else begin
+    | [] ->
       let lines = ref [] in
       (try while true do lines := input_line stdin :: !lines done
        with End_of_file -> ());
+      predeclare_global_if_missing "ARGS";
       Hashtbl.replace global_arrays "ARGS" (Arr (dynarr_empty ()));
       List.rev !lines
-    end
   in
   let env_dict = Hashtbl.create 64 in
   Array.iter (fun entry ->
@@ -1366,5 +1802,8 @@ let () =
       Hashtbl.replace env_dict k (Str v)
     | None -> ()
   ) (Unix.environment ());
+  predeclare_global_if_missing "ENV";
   Hashtbl.replace global_dicts "ENV" (Dict env_dict);
-  run_lines lines
+  run_lines lines;
+  if !strict_globals_mode then
+    validate_required_globals_runtime ()

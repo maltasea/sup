@@ -6,6 +6,9 @@ Main entrypoints:
 - Perl: `perl slup.pl <script.slup>`
 - OCaml build: `dune build ./slup.exe` then `_build/default/slup.exe <script.slup>`
 
+Release OCaml binary to repo root:
+- `make release-ocaml` (writes `./slup`)
+
 Execution model:
 - line-based parse (one line = one statement, except block constructs)
 - scripts/modules are compiled into a simple AST before execution

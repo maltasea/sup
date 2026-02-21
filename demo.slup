@@ -1,7 +1,7 @@
-# ── demo.simp ── showcase of the simp language ──
+# ── demo.slup ── showcase of the slup language ──
 
 # --- Variables and basic expressions ---
-set $name = "simp"
+set $name = "slup"
 set $version = 1
 print("Welcome to $name v$version")
 
@@ -25,7 +25,7 @@ if gt($a, $b)
   print("10 is greater than 3")
 end
 
-if eq($name, "simp")
+if eq($name, "slup")
   print("language confirmed")
 else
   print("unknown language")
@@ -63,7 +63,7 @@ sub greet($who)
 end
 
 greet("world")
-greet("simp user")
+greet("slup user")
 
 # --- sub with logic ---
 sub classify($n)
@@ -120,8 +120,8 @@ set $date = sh("date +%Y-%m-%d")
 print("today: $date")
 
 # --- File I/O ---
-write-file("simp was here", "/tmp/simp-demo.txt")
-set $content = read-file("/tmp/simp-demo.txt")
+write-file("slup was here", "/tmp/slup-demo.txt")
+set $content = read-file("/tmp/slup-demo.txt")
 print("read back: $content")
 
 print("-- demo complete --")
