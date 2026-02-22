@@ -39,8 +39,8 @@ my $ones_depth = join(',', (1) x $depth);
 # ----------------------------------------------------------------------
 # Recursion vs loop
 # ----------------------------------------------------------------------
-my $rec_iter = File::Spec->catfile($tmp, 'rec-iter.shlm');
-my $rec_fn = File::Spec->catfile($tmp, 'rec-fn.shlm');
+my $rec_iter = File::Spec->catfile($tmp, 'rec-iter.es');
+my $rec_fn = File::Spec->catfile($tmp, 'rec-fn.es');
 
 write_program(
     $rec_iter,
@@ -73,9 +73,9 @@ my $rec_with = bench_case('recursion(calls)', $sup, [], $rec_fn, $warmup, $iters
 # ----------------------------------------------------------------------
 # Local function call vs module-qualified call
 # ----------------------------------------------------------------------
-my $mod_file = File::Spec->catfile($tmp, 'benchmod.shlm');
-my $mod_local = File::Spec->catfile($tmp, 'mod-local.shlm');
-my $mod_qual = File::Spec->catfile($tmp, 'mod-qualified.shlm');
+my $mod_file = File::Spec->catfile($tmp, 'benchmod.es');
+my $mod_local = File::Spec->catfile($tmp, 'mod-local.es');
+my $mod_qual = File::Spec->catfile($tmp, 'mod-qualified.es');
 
 write_program(
     $mod_file,
@@ -120,7 +120,7 @@ my $mod_with = bench_case('module/function-calls', $sup, [], $mod_qual, $warmup,
 # ----------------------------------------------------------------------
 # strict-globals overhead
 # ----------------------------------------------------------------------
-my $strict_prog = File::Spec->catfile($tmp, 'strict-globals.shlm');
+my $strict_prog = File::Spec->catfile($tmp, 'strict-globals.es');
 
 write_program(
     $strict_prog,

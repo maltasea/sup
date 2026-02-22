@@ -636,6 +636,8 @@ let has_extension file =
   let base = Filename.basename file in
   String.contains base '.'
 
+let default_load_extensions = [".es"]
+
 let file_exists path =
   Sys.file_exists path &&
   (try not (Sys.is_directory path) with _ -> false)
@@ -649,19 +651,16 @@ let resolve_load_path file =
       | None -> "." in
     add (Filename.concat base_dir file);
     if not (has_extension file) then begin
-      add (Filename.concat base_dir (file ^ ".shlm"));
-      add (Filename.concat base_dir (file ^ ".sup")) (* backward compatibility *)
+      List.iter (fun ext -> add (Filename.concat base_dir (file ^ ext))) default_load_extensions
     end;
     add file;
     if not (has_extension file) then begin
-      add (file ^ ".shlm");
-      add (file ^ ".sup") (* backward compatibility *)
+      List.iter (fun ext -> add (file ^ ext)) default_load_extensions
     end
   end else begin
     add file;
     if not (has_extension file) then begin
-      add (file ^ ".shlm");
-      add (file ^ ".sup") (* backward compatibility *)
+      List.iter (fun ext -> add (file ^ ext)) default_load_extensions
     end
   end;
   let rec pick = function
@@ -806,19 +805,16 @@ let resolve_load_path_from_file from_file target =
     let base_dir = Filename.dirname from_file in
     add (Filename.concat base_dir target);
     if not (has_extension target) then begin
-      add (Filename.concat base_dir (target ^ ".shlm"));
-      add (Filename.concat base_dir (target ^ ".sup")) (* backward compatibility *)
+      List.iter (fun ext -> add (Filename.concat base_dir (target ^ ext))) default_load_extensions
     end;
     add target;
     if not (has_extension target) then begin
-      add (target ^ ".shlm");
-      add (target ^ ".sup") (* backward compatibility *)
+      List.iter (fun ext -> add (target ^ ext)) default_load_extensions
     end
   end else begin
     add target;
     if not (has_extension target) then begin
-      add (target ^ ".shlm");
-      add (target ^ ".sup") (* backward compatibility *)
+      List.iter (fun ext -> add (target ^ ext)) default_load_extensions
     end
   end;
   let rec pick = function

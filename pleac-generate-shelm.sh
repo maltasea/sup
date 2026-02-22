@@ -47,7 +47,7 @@ while IFS= read -r section_dir; do
 
   perl_file="$section_dir/perl.pl"
   ocaml_file="$section_dir/ocaml.ml"
-  shelm_file="$section_dir/shelm.shlm"
+  shelm_file="$section_dir/shelm.es"
 
   ref_out="$TMP_DIR/ref.out"
   ref_err="$TMP_DIR/ref.err"

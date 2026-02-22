@@ -676,19 +676,18 @@ sub module_name_from_file {
 sub resolve_load_path {
     my ($file) = @_;
     require File::Spec;
+    my @default_exts = ('.es');
     my @candidates;
     push @candidates, $file;
     if ($file !~ /\.[^\/\\]+$/) {
-        push @candidates, "$file.shlm";
-        push @candidates, "$file.sup"; # backward compatibility
+        push @candidates, map { "$file$_" } @default_exts;
     }
 
     my $base_dir = $module_dirs{$current_module} // '.';
     if (!File::Spec->file_name_is_absolute($file)) {
         push @candidates, File::Spec->catfile($base_dir, $file);
         if ($file !~ /\.[^\/\\]+$/) {
-            push @candidates, File::Spec->catfile($base_dir, "$file.shlm");
-            push @candidates, File::Spec->catfile($base_dir, "$file.sup"); # backward compatibility
+            push @candidates, map { File::Spec->catfile($base_dir, "$file$_") } @default_exts;
         }
     }
 
@@ -856,19 +855,18 @@ sub resolve_load_path_from_file {
     my ($from_file, $target) = @_;
     require File::Spec;
     require File::Basename;
+    my @default_exts = ('.es');
     my @candidates;
     push @candidates, $target;
     if ($target !~ /\.[^\/\\]+$/) {
-        push @candidates, "$target.shlm";
-        push @candidates, "$target.sup"; # backward compatibility
+        push @candidates, map { "$target$_" } @default_exts;
     }
 
     if (!File::Spec->file_name_is_absolute($target)) {
         my $base_dir = File::Basename::dirname($from_file);
         push @candidates, File::Spec->catfile($base_dir, $target);
         if ($target !~ /\.[^\/\\]+$/) {
-            push @candidates, File::Spec->catfile($base_dir, "$target.shlm");
-            push @candidates, File::Spec->catfile($base_dir, "$target.sup"); # backward compatibility
+            push @candidates, map { File::Spec->catfile($base_dir, "$target$_") } @default_exts;
         }
     }
 

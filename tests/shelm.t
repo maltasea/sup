@@ -14,7 +14,7 @@ my $sup_cmd = $ENV{SHELM_CMD}
 
 sub run_shelm {
     my ($program) = @_;
-    my ($fh, $path) = tempfile(SUFFIX => '.shlm', UNLINK => 1);
+    my ($fh, $path) = tempfile(SUFFIX => '.es', UNLINK => 1);
     print {$fh} $program;
     close $fh;
 
@@ -421,8 +421,8 @@ SHELM
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    my $mod = File::Spec->catfile($dir, 'moda.shlm');
-    my $main = File::Spec->catfile($dir, 'main.shlm');
+    my $mod = File::Spec->catfile($dir, 'moda.es');
+    my $main = File::Spec->catfile($dir, 'main.es');
 
     open my $mfh, '>', $mod or die "cannot write $mod: $!";
     print {$mfh} <<'SHELM';
@@ -456,8 +456,8 @@ SHELM
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    my $mod = File::Spec->catfile($dir, 'modb.shlm');
-    my $main = File::Spec->catfile($dir, 'main.shlm');
+    my $mod = File::Spec->catfile($dir, 'modb.es');
+    my $main = File::Spec->catfile($dir, 'main.es');
 
     open my $mfh, '>', $mod or die "cannot write $mod: $!";
     print {$mfh} <<'SHELM';

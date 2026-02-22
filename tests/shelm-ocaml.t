@@ -8,7 +8,7 @@ use FindBin qw($Bin);
 use File::Spec;
 
 my $root = File::Spec->catdir($Bin, '..');
-my $demo = File::Spec->catfile($root, 'demo.shlm');
+my $demo = File::Spec->catfile($root, 'demo.es');
 
 my $build_cmd = qq{cd "$root" && eval \$(opam env) && dune build ./shelm.exe 2>&1};
 my $build_out = `$build_cmd`;
@@ -21,7 +21,7 @@ my $sup = File::Spec->catfile($root, '_build', 'default', 'shelm.exe');
 
 sub run_shelm {
     my ($program) = @_;
-    my ($fh, $path) = tempfile(SUFFIX => '.shlm', UNLINK => 1);
+    my ($fh, $path) = tempfile(SUFFIX => '.es', UNLINK => 1);
     print {$fh} $program;
     close $fh;
 
@@ -33,7 +33,7 @@ sub run_shelm {
 
 sub run_shelm_env {
     my ($env, $program) = @_;
-    my ($fh, $path) = tempfile(SUFFIX => '.shlm', UNLINK => 1);
+    my ($fh, $path) = tempfile(SUFFIX => '.es', UNLINK => 1);
     print {$fh} $program;
     close $fh;
 
@@ -640,19 +640,19 @@ SHELM
 
 {
     my ($status, $out) = run_file($demo);
-    is($status, 0, 'demo.shlm executes (ocaml)');
-    like($out, qr/-- demo complete --\n/, 'demo.shlm reaches completion (ocaml)');
+    is($status, 0, 'demo.es executes (ocaml)');
+    like($out, qr/-- demo complete --\n/, 'demo.es reaches completion (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'alpha.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'alpha.es'), <<'SHELM');
 set $name = "alpha"
 defun who($x)
   return(concat(concat($name, ":"), $x))
 end
 SHELM
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 set $name = "main"
 defun who($x)
   return(concat(concat($name, ":"), $x))
@@ -661,54 +661,54 @@ load("alpha")
 print(who("A"))
 print(alpha/who("B"))
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'qualified and unqualified function calls execute (ocaml)');
     is($out, "main:A\nalpha:B\n", 'main stays unqualified, module requires qualification (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'alpha.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'alpha.es'), <<'SHELM');
 defun only_alpha()
   return("x")
 end
 SHELM
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 load("alpha")
 print(only_alpha())
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     ok($status != 0, 'module-only function is not available unqualified (ocaml)');
     like($out, qr/Unknown function: only_alpha/, 'unqualified module-only function fails clearly (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'alpha.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'alpha.es'), <<'SHELM');
 $G = "from-module"
 defun getg()
   return($G)
 end
 SHELM
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 $G = "from-main"
 load("alpha")
 print($G)
 print(alpha/getg())
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'global variables are shared across modules (ocaml)');
     is($out, "from-module\nfrom-module\n", 'global value is shared and visible in both main and module (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'alpha.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'alpha.es'), <<'SHELM');
 set $v = "module-local"
 set @items = ["a", "b", "c"]
 set %cfg = {k: "v"}
 SHELM
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 set $v = "main-local"
 load("alpha")
 print($v)
@@ -716,145 +716,145 @@ print($alpha/v)
 print(len(@alpha/items))
 print(dict-get(%alpha/cfg, "k"))
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'qualified var/array/dict access executes (ocaml)');
     is($out, "main-local\nmodule-local\n3\nv\n", 'module symbols stay scoped and are reachable through module/name (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'mods', 'helper.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'mods', 'helper.es'), <<'SHELM');
 defun ping()
   return("pong")
 end
 SHELM
-    write_text(File::Spec->catfile($dir, 'mods', 'alpha.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'mods', 'alpha.es'), <<'SHELM');
 load("helper")
 SHELM
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 load("mods/alpha")
 print(helper/ping())
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'relative load from inside a module executes (ocaml)');
     is($out, "pong\n", 'module load resolves relative paths from caller module directory (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'alpha.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'alpha.es'), <<'SHELM');
 defun call_main()
   return(who("z"))
 end
 SHELM
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 defun who($x)
   return(concat("main:", $x))
 end
 load("alpha")
 print(alpha/call_main())
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'module can resolve main symbols unqualified (ocaml)');
     is($out, "main:z\n", 'main module remains an unqualified fallback namespace (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'alpha.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'alpha.es'), <<'SHELM');
 $LOAD_COUNT = add($LOAD_COUNT, 1)
 SHELM
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 $LOAD_COUNT = 0
 load("alpha")
 load("alpha")
 print($LOAD_COUNT)
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'loading same module twice executes module once (ocaml)');
     is($out, "1\n", 'load() caches module execution by resolved path (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'a.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'a.es'), <<'SHELM');
 load("b")
 SHELM
-    write_text(File::Spec->catfile($dir, 'b.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'b.es'), <<'SHELM');
 load("a")
 SHELM
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 load("a")
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     ok($status != 0, 'cyclic load fails (ocaml)');
     like($out, qr/load: cyclic dependency detected:/, 'cyclic load failure is clear (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'left', 'alpha.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'left', 'alpha.es'), <<'SHELM');
 print("left")
 SHELM
-    write_text(File::Spec->catfile($dir, 'right', 'alpha.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'right', 'alpha.es'), <<'SHELM');
 print("right")
 SHELM
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 load("left/alpha")
 load("right/alpha")
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     ok($status != 0, 'module name collision across different files fails (ocaml)');
     like($out, qr/module name collision 'alpha'/, 'module name collision error is clear (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 set @ARGS = ["a", "b"]
 print(len(@ARGS))
 print(gt(len(dict-keys(%ENV)), 0))
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'uppercase @ARGS and %ENV are globals (ocaml)');
     is($out, "2\n1\n", 'global arrays/dicts are accessible without namespacing (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 print(sh("echo ok"))
 print(sh("echo ok | cat", 1))
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'sh() works for safe commands and explicit-unsafe override (ocaml)');
     is($out, "ok\nok\n", 'sh() output is captured for safe and overridden commands (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 sh("echo ok | cat")
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     ok($status != 0, 'sh() rejects unsafe shell metacharacters by default (ocaml)');
     like($out, qr/unsafe shell metacharacters detected/, 'unsafe sh() error is clear (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 stderr("warn")
 print("out")
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'stderr() builtin executes (ocaml)');
     like($out, qr/(?:warn\nout\n|out\nwarn\n)\z/, 'stderr() emits alongside stdout with line semantics (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 set $user-name = "ben"
 set $http->status = "200"
 set $ready? = "yes"
@@ -864,17 +864,17 @@ print($http->status)
 print($ready?)
 print($MY-GLOBAL?)
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'dash, arrow, and question-mark symbols execute (ocaml)');
     is($out, "ben\n200\nyes\nOK\n", 'symbol names support -, ->, and ? (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 set $Bad = "x"
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     ok($status != 0, 'mixed-case local variable names are rejected (ocaml)');
     like($out, qr/locals must be lowercase/, 'mixed-case local rejection is clear (ocaml)');
 }
@@ -963,11 +963,11 @@ SHELM
     chmod 0751, $src or die "cannot chmod $src: $!";
     my $fixed = time - 120;
     utime $fixed, $fixed, $src or die "cannot utime $src: $!";
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<"SHELM");
+    write_text(File::Spec->catfile($dir, 'main.es'), <<"SHELM");
 cp("$src", "$dst")
 print(file->exists("$dst"))
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'cp() executes for binary files (ocaml)');
     is($out, "1\n", 'cp() creates destination file (ocaml)');
     is(slurp_raw($dst), slurp_raw($src), 'cp() preserves binary content (ocaml)');
@@ -977,7 +977,7 @@ SHELM
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 set %caps = sys("sys.capabilities")
 print(dict-get(%caps, "ok"))
 print(gt(len(dict-get(%caps, "items")), 0))
@@ -985,7 +985,7 @@ set %pid = sys->call("posix.getpid")
 print(dict-get(%pid, "ok"))
 print(gt(dict-get(%pid, "pid"), 0))
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'sys capabilities and sys->call alias execute (ocaml)');
     is($out, "1\n1\n1\n1\n", 'sys reports capabilities and getpid through alias (ocaml)');
 }
@@ -994,7 +994,7 @@ SHELM
     my $dir = tempdir(CLEANUP => 1);
     my $path = File::Spec->catfile($dir, 'node.txt');
     my $missing = File::Spec->catfile($dir, 'missing.txt');
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<"SHELM");
+    write_text(File::Spec->catfile($dir, 'main.es'), <<"SHELM");
 text->file("abc", "$path")
 set %s = sys("posix.stat", "$path")
 print(dict-get(%s, "ok"))
@@ -1010,7 +1010,7 @@ set %bad = sys("posix.nope")
 print(dict-get(%bad, "ok"))
 print(gt(dict-get(%bad, "code"), 0))
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'sys posix stat/access paths and error paths execute (ocaml)');
     is($out, "1\nfile\n1\n1\n1\n0\n1\n0\n1\n", 'sys returns structured ok/code for success and failures (ocaml)');
 }
@@ -1019,7 +1019,7 @@ SHELM
     my $dir = tempdir(CLEANUP => 1);
     my $node = File::Spec->catfile($dir, 'node');
     my $link = File::Spec->catfile($dir, 'node.link');
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<"SHELM");
+    write_text(File::Spec->catfile($dir, 'main.es'), <<"SHELM");
 set %mk = sys("posix.mkdir", "$node", "0750")
 print(dict-get(%mk, "ok"))
 set %ch = sys("posix.chmod", "$node", "0700")
@@ -1039,7 +1039,7 @@ print(dict-get(%ul, "ok"))
 set %rd = sys("posix.rmdir", "$node")
 print(dict-get(%rd, "ok"))
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'sys posix mutation capabilities execute (ocaml)');
     is($out, "1\n1\n1\n1\n1\n1\n1\n1\n1\n", 'mkdir/chmod/stat/utime/symlink/lstat/readlink/unlink/rmdir all succeed (ocaml)');
 }
@@ -1047,7 +1047,7 @@ SHELM
 {
     my $dir = tempdir(CLEANUP => 1);
     my $path = File::Spec->catfile($dir, 'node.txt');
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<"SHELM");
+    write_text(File::Spec->catfile($dir, 'main.es'), <<"SHELM");
 text->file("x", "$path")
 print(eq(path->basename("$path"), "node.txt"))
 print(eq(path->dirname("$path"), "$dir"))
@@ -1060,7 +1060,7 @@ print(gt(time->now(), 0))
 print(matchrx(time->iso-utc(), #"T"))
 print(gt(len(dir->list("$dir")), 0))
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'path/date/time aliases execute (ocaml)');
     is($out, "1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n", 'path/date/time and dir->list aliases preserve behavior (ocaml)');
 }
@@ -1069,7 +1069,7 @@ SHELM
     my $dir = tempdir(CLEANUP => 1);
     my $lines_path = File::Spec->catfile($dir, 'lines.txt');
     my $text_path = File::Spec->catfile($dir, 'text.txt');
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<"SHELM");
+    write_text(File::Spec->catfile($dir, 'main.es'), <<"SHELM");
 set \@xs = ["alpha", "beta"]
 lines->file(\@xs, "$lines_path")
 set \@ys = file->lines("$lines_path")
@@ -1078,7 +1078,7 @@ print(get(\@ys, 0))
 text->file("hello", "$text_path")
 print(file->text("$text_path"))
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'directional file aliases execute (ocaml)');
     is($out, "2\nalpha\nhello\n", 'file->text/text->file and file->lines/lines->file roundtrip correctly (ocaml)');
 }
@@ -1087,7 +1087,7 @@ SHELM
     my $dir = tempdir(CLEANUP => 1);
     my $subdir = File::Spec->catfile($dir, 'subdir');
     my $text_path = File::Spec->catfile($dir, 'aliases.txt');
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<"SHELM");
+    write_text(File::Spec->catfile($dir, 'main.es'), <<"SHELM");
 mkdir("$subdir")
 set \@xs = ["a", "b"]
 array->push(\@xs, "c")
@@ -1117,55 +1117,55 @@ print(dir->exists(".."))
 set \@entries = dir->entries("$dir")
 print(gt(array->len(\@entries), 0))
 SHELM
-    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file(File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'namespaced aliases execute (ocaml)');
     is($out, "3\nc\nc\nv\n1\nz\n3\nAB\nxy\n1\n1\n1\nAB\n0\n1\n1\n", 'array/dict/text/dir/file aliases preserve behavior (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'mod.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'mod.es'), <<'SHELM');
 $DB_HOST = "localhost"
 SHELM
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 global $DB_HOST required
 load("mod")
 SHELM
-    my ($status, $out) = run_file_with_opt('--check', File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file_with_opt('--check', File::Spec->catfile($dir, 'main.es'));
     is($status, 0, '--check passes when required global is assigned (ocaml)');
     is($out, '', '--check success is silent (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 global $DB_HOST required
 set $path = "mod"
 load($path)
 SHELM
-    my ($status, $out) = run_file_with_opt('--check', File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file_with_opt('--check', File::Spec->catfile($dir, 'main.es'));
     ok($status != 0, '--check rejects dynamic load targets (ocaml)');
     like($out, qr/static check requires load\("literal"\)/, '--check reports dynamic load limitation (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 global $DB_PORT default("5432")
 print($DB_PORT)
 SHELM
-    my ($status, $out) = run_file_with_opt('--strict-globals', File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file_with_opt('--strict-globals', File::Spec->catfile($dir, 'main.es'));
     is($status, 0, 'strict mode applies declared defaults (ocaml)');
     is($out, "5432\n", 'strict mode exposes defaulted globals (ocaml)');
 }
 
 {
     my $dir = tempdir(CLEANUP => 1);
-    write_text(File::Spec->catfile($dir, 'main.shlm'), <<'SHELM');
+    write_text(File::Spec->catfile($dir, 'main.es'), <<'SHELM');
 global $DECLARED default("ok")
 print($MISSING)
 SHELM
-    my ($status, $out) = run_file_with_opt('--strict-globals', File::Spec->catfile($dir, 'main.shlm'));
+    my ($status, $out) = run_file_with_opt('--strict-globals', File::Spec->catfile($dir, 'main.es'));
     ok($status != 0, 'strict mode rejects undeclared global reads (ocaml)');
     like($out, qr/undeclared global read/, 'strict mode undeclared-read error is clear (ocaml)');
 }

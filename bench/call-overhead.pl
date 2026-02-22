@@ -35,8 +35,8 @@ die "Cannot find interpreter at $sup_path\n" unless -f $sup_path;
 my $runner = $impl eq 'perl' ? ['perl', $sup_path] : [$sup_path];
 
 my $tmp = tempdir(CLEANUP => 1);
-my $program_no_fn = File::Spec->catfile($tmp, 'no-function.shlm');
-my $program_fn = File::Spec->catfile($tmp, 'with-function.shlm');
+my $program_no_fn = File::Spec->catfile($tmp, 'no-function.es');
+my $program_fn = File::Spec->catfile($tmp, 'with-function.es');
 
 my $ones = join(',', (1) x $calls);
 

@@ -3,8 +3,9 @@
 `shelm` is a small scripting language interpreter.
 
 Main entrypoints:
-- Perl: `perl shelm.pl <script.shlm>`
-- OCaml build: `dune build ./shelm.exe` then `_build/default/shelm.exe <script.shlm>`
+- Perl: `perl shelm.pl <script.es>`
+- OCaml build: `dune build ./shelm.exe` then `_build/default/shelm.exe <script.es>`
+- Preferred Shelm source extension is `.es`.
 
 Release OCaml binary to repo root:
 - `make release-ocaml` (writes `./shelm`)
@@ -102,7 +103,7 @@ Current naming direction:
 Use static mode to verify global declarations/assignments without executing the script:
 
 ```sh
-perl shelm.pl --check main.shlm
+perl shelm.pl --check main.es
 ```
 
 `--check` enforces:
@@ -120,7 +121,7 @@ Limitation:
 Use strict mode to enforce global declarations at runtime:
 
 ```sh
-perl shelm.pl --strict-globals main.shlm
+perl shelm.pl --strict-globals main.es
 ```
 
 `--strict-globals` does:
@@ -145,7 +146,7 @@ load("moda")
 `load()` behavior:
 - modules are executed once per resolved file path (subsequent `load(...)` calls reuse loaded module state)
 - cyclic loads fail fast with a clear dependency chain
-- loading two different files with the same module basename (for example two `alpha.shlm` files) fails with a module-name collision error
+- loading two different files with the same module basename (for example two `alpha.es` files) fails with a module-name collision error
 
 Module-local symbols are namespaced:
 - function call: `moda/who("x")`
