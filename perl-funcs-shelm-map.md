@@ -1,15 +1,15 @@
-# Sup Mapping For `perl-funcs.md` and `shell-posix-builtins.md`
+# Shelm Mapping For `perl-funcs.md` and `shell-posix-builtins.md`
 
-This maps Perl function families to Sup for a shell-first language.
+This maps Perl function families to Shelm for a shell-first language.
 
 ## Policy
 
-- Sup core stays procedural and shell-focused.
+- Shelm core stays procedural and shell-focused.
 - OOP crossing is blocked in the Perl bridge (`perl.call` rejects blessed refs in args/results).
-- Prefer native Sup built-ins for common scripting tasks.
+- Prefer native Shelm built-ins for common scripting tasks.
 - Use `sys(...)` for advanced POSIX or external Perl modules.
 
-## Native Sup (Built-in)
+## Native Shelm (Built-in)
 
 - File write/read/check:
   - `text->file`, `file->append`, `file->text`, `file->lines`, `lines->file`, `file->exists`, `file->remove`
@@ -44,12 +44,12 @@ This maps Perl function families to Sup for a shell-first language.
 
 Examples:
 
-```sup
+```shelm
 set %h = sys("perl.call", "Digest::SHA", "sha256_hex", ["abc"])
 print(dict-get(%h, "result"))
 ```
 
-## Out Of Scope For Core Sup
+## Out Of Scope For Core Shelm
 
 These stay out of core unless there is repeated shell-first demand:
 
@@ -64,8 +64,8 @@ These stay out of core unless there is repeated shell-first demand:
 - Shell job-control/history internals:
   - `bg`, `fg`, `jobs`, `fc`, `hash`, `alias`, `unalias`
 
-## From `perl-funcs.md` To Sup: Practical Rule
+## From `perl-funcs.md` To Shelm: Practical Rule
 
-- Needed often in shell scripts: add/keep native Sup built-in.
+- Needed often in shell scripts: add/keep native Shelm built-in.
 - Powerful but platform-specific: expose via `sys(...)` capability.
-- Perl-internal language mechanics: do not mirror in Sup.
+- Perl-internal language mechanics: do not mirror in Shelm.

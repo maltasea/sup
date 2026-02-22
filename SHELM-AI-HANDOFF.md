@@ -1,14 +1,14 @@
-# SUP AI Handoff
+# SHELM AI Handoff
 
-This document captures implementation context for AI assistants working on the sup codebase. It complements the README and test suites.
+This document captures implementation context for AI assistants working on the shelm codebase. It complements the README and test suites.
 
 ## Dual Implementations
 
 | | Perl | OCaml |
 |---|---|---|
-| Entry | `perl sup.pl <script>` | `_build/default/sup.exe <script>` |
-| Build | none | `opam exec -- dune build ./sup.exe` |
-| Release binary | n/a | `make release-ocaml` (writes `./sup`) |
+| Entry | `perl shelm.pl <script>` | `_build/default/shelm.exe <script>` |
+| Build | none | `opam exec -- dune build ./shelm.exe` |
+| Release binary | n/a | `make release-ocaml` (writes `./shelm`) |
 
 Both interpreters should accept the same language. When adding features, implement in both and verify with the shared test suite.
 
@@ -21,7 +21,7 @@ Both interpreters should accept the same language. When adding features, impleme
   - full `def`/`let` immutability semantics
   - enforce immutability rules in runtime semantics (`def`/`let` immutable, `set` mutable)
 
-## Architecture (OCaml — `sup.ml`)
+## Architecture (OCaml — `shelm.ml`)
 
 Single-file interpreter (~3000 lines). Key sections in order:
 
@@ -60,7 +60,7 @@ Added in the OCaml sync (Feb 2026). Lambdas are first-class values.
 
 ### Syntax
 
-```sup
+```shelm
 {$x -> mul($x, 2)}
 {$a, $b -> add($a, $b)}
 ```
@@ -146,15 +146,15 @@ read -> user-input
 
 ## Test Strategy
 
-- `tests/sup.t` — Perl-only core tests
+- `tests/shelm.t` — Perl-only core tests
 - `tests/conformance.t` — Perl-only conformance (modules, shell, sys, aliases)
-- `tests/sup-ocaml.t` — OCaml parity (mirrors sup.t + conformance.t)
+- `tests/shelm-ocaml.t` — OCaml parity (mirrors shelm.t + conformance.t)
 - `tests/static-check.t` — `--check` mode
 - `tests/strict-globals.t` — `--strict-globals` mode
 
 Run all: `./tests/run-tests.sh` (set `RUN_OCAML_TESTS=1` for OCaml suite).
 
-The OCaml test file (`sup-ocaml.t`) builds the binary via `dune build` at the top, then runs each test case through a temp file.
+The OCaml test file (`shelm-ocaml.t`) builds the binary via `dune build` at the top, then runs each test case through a temp file.
 
 ## Parity Gaps
 

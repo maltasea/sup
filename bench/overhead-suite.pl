@@ -28,8 +28,8 @@ die "--iters must be > 0\n" unless $iters > 0;
 die "--warmup must be >= 0\n" unless $warmup >= 0;
 
 my $root = File::Spec->rel2abs(File::Spec->catdir(File::Spec->curdir()));
-my $sup = File::Spec->catfile($root, 'sup.pl');
-die "Cannot find sup.pl at $sup\n" unless -f $sup;
+my $sup = File::Spec->catfile($root, 'shelm.pl');
+die "Cannot find shelm.pl at $sup\n" unless -f $sup;
 
 my $tmp = tempdir(CLEANUP => 1);
 
@@ -39,24 +39,24 @@ my $ones_depth = join(',', (1) x $depth);
 # ----------------------------------------------------------------------
 # Recursion vs loop
 # ----------------------------------------------------------------------
-my $rec_iter = File::Spec->catfile($tmp, 'rec-iter.sup');
-my $rec_fn = File::Spec->catfile($tmp, 'rec-fn.sup');
+my $rec_iter = File::Spec->catfile($tmp, 'rec-iter.shlm');
+my $rec_fn = File::Spec->catfile($tmp, 'rec-fn.shlm');
 
 write_program(
     $rec_iter,
-    <<"SUP"
+    <<"SHELM"
 set \@nums = [$ones_depth]
 set \$sum = 0
 foreach \$n \@nums
   set \$sum = add(\$sum, \$n)
 end
 print(\$sum)
-SUP
+SHELM
 );
 
 write_program(
     $rec_fn,
-    <<"SUP"
+    <<"SHELM"
 defun rec(\$n)
   if lt(\$n, 1)
     return(0)
@@ -64,7 +64,7 @@ defun rec(\$n)
   return(add(1, rec(sub(\$n, 1))))
 end
 print(rec($depth))
-SUP
+SHELM
 );
 
 my $rec_base = bench_case('rec-baseline(loop)', $sup, [], $rec_iter, $warmup, $iters);
@@ -73,22 +73,22 @@ my $rec_with = bench_case('recursion(calls)', $sup, [], $rec_fn, $warmup, $iters
 # ----------------------------------------------------------------------
 # Local function call vs module-qualified call
 # ----------------------------------------------------------------------
-my $mod_file = File::Spec->catfile($tmp, 'benchmod.sup');
-my $mod_local = File::Spec->catfile($tmp, 'mod-local.sup');
-my $mod_qual = File::Spec->catfile($tmp, 'mod-qualified.sup');
+my $mod_file = File::Spec->catfile($tmp, 'benchmod.shlm');
+my $mod_local = File::Spec->catfile($tmp, 'mod-local.shlm');
+my $mod_qual = File::Spec->catfile($tmp, 'mod-qualified.shlm');
 
 write_program(
     $mod_file,
-    <<"SUP"
+    <<"SHELM"
 defun inc(\$x)
   return(add(\$x, 1))
 end
-SUP
+SHELM
 );
 
 write_program(
     $mod_local,
-    <<"SUP"
+    <<"SHELM"
 defun inc(\$x)
   return(add(\$x, 1))
 end
@@ -98,12 +98,12 @@ foreach \$n \@nums
   set \$sum = add(\$sum, inc(\$n))
 end
 print(\$sum)
-SUP
+SHELM
 );
 
 write_program(
     $mod_qual,
-    <<"SUP"
+    <<"SHELM"
 load("benchmod")
 set \@nums = [$ones_calls]
 set \$sum = 0
@@ -111,7 +111,7 @@ foreach \$n \@nums
   set \$sum = add(\$sum, benchmod/inc(\$n))
 end
 print(\$sum)
-SUP
+SHELM
 );
 
 my $mod_base = bench_case('local-function-calls', $sup, [], $mod_local, $warmup, $iters);
@@ -120,18 +120,18 @@ my $mod_with = bench_case('module/function-calls', $sup, [], $mod_qual, $warmup,
 # ----------------------------------------------------------------------
 # strict-globals overhead
 # ----------------------------------------------------------------------
-my $strict_prog = File::Spec->catfile($tmp, 'strict-globals.sup');
+my $strict_prog = File::Spec->catfile($tmp, 'strict-globals.shlm');
 
 write_program(
     $strict_prog,
-    <<"SUP"
+    <<"SHELM"
 global \$SUM default("0")
 set \@nums = [$ones_calls]
 foreach \$n \@nums
   set \$SUM = add(\$SUM, \$n)
 end
 print(\$SUM)
-SUP
+SHELM
 );
 
 my $strict_base = bench_case('globals(no-strict)', $sup, [], $strict_prog, $warmup, $iters);

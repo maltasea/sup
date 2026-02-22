@@ -9,7 +9,7 @@ use Scalar::Util qw(blessed);
 use Time::HiRes qw(time usleep);
 
 # ============================================================
-#  sup — a simple scripting language interpreter in Perl
+#  shelm — a simple scripting language interpreter in Perl
 # ============================================================
 
 # --- Variable store ---
@@ -679,7 +679,7 @@ sub resolve_load_path {
     my @candidates;
     push @candidates, $file;
     if ($file !~ /\.[^\/\\]+$/) {
-        push @candidates, "$file.sup";
+        push @candidates, "$file.shlm";
         push @candidates, "$file.sup"; # backward compatibility
     }
 
@@ -687,7 +687,7 @@ sub resolve_load_path {
     if (!File::Spec->file_name_is_absolute($file)) {
         push @candidates, File::Spec->catfile($base_dir, $file);
         if ($file !~ /\.[^\/\\]+$/) {
-            push @candidates, File::Spec->catfile($base_dir, "$file.sup");
+            push @candidates, File::Spec->catfile($base_dir, "$file.shlm");
             push @candidates, File::Spec->catfile($base_dir, "$file.sup"); # backward compatibility
         }
     }
@@ -859,7 +859,7 @@ sub resolve_load_path_from_file {
     my @candidates;
     push @candidates, $target;
     if ($target !~ /\.[^\/\\]+$/) {
-        push @candidates, "$target.sup";
+        push @candidates, "$target.shlm";
         push @candidates, "$target.sup"; # backward compatibility
     }
 
@@ -867,7 +867,7 @@ sub resolve_load_path_from_file {
         my $base_dir = File::Basename::dirname($from_file);
         push @candidates, File::Spec->catfile($base_dir, $target);
         if ($target !~ /\.[^\/\\]+$/) {
-            push @candidates, File::Spec->catfile($base_dir, "$target.sup");
+            push @candidates, File::Spec->catfile($base_dir, "$target.shlm");
             push @candidates, File::Spec->catfile($base_dir, "$target.sup"); # backward compatibility
         }
     }
@@ -3522,7 +3522,7 @@ while (@ARGV && $ARGV[0] =~ /^--/) {
 }
 
 if ($check_mode) {
-    die "Usage: sup.pl --check <file>\n" unless @ARGV;
+    die "Usage: shelm.pl --check <file>\n" unless @ARGV;
     my $ok = run_static_check($ARGV[0]);
     exit($ok ? 0 : 1);
 }

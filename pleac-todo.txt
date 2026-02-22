@@ -13,11 +13,11 @@ Date: 2026-02-21
 ## Scope Rules
 
 In scope:
-- Missing runtime capabilities in `sup.pl` used by everyday scripts.
+- Missing runtime capabilities in `shelm.pl` used by everyday scripts.
 
 Out of scope:
 - Missing Perl module dependencies in PLEAC snippets.
-- Reference-required sections (SUP has no reference model):
+- Reference-required sections (Shelm has no reference model):
   - `pleac/Chapter_11_References_and_Records/Section_11.4`
   - `pleac/Chapter_11_References_and_Records/Section_11.5`
   - `pleac/Chapter_11_References_and_Records/Section_11.6`
@@ -57,10 +57,10 @@ Phase C (defer unless clearly needed):
 
 ## Work Pattern Per Item
 
-1. Add helper in `sup.pl`.
+1. Add helper in `shelm.pl`.
 2. Add focused tests.
 3. Run checks:
-   - `perl -c sup.pl`
+   - `perl -c shelm.pl`
    - `./tests/run-tests.sh`
 4. Only if Perl-side behavior is stable, consider OCaml parity later.
 

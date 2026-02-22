@@ -55,10 +55,10 @@ bench-call-perl:
 	perl bench/call-overhead.pl --impl perl
 
 bench-call-ocaml:
-	opam exec -- dune build ./sup.exe
+	opam exec -- dune build ./shelm.exe
 	opam exec -- perl bench/call-overhead.pl --impl ocaml
 
 release-ocaml:
-	opam exec -- dune build --profile release ./sup.exe
-	cp _build/default/sup.exe ./sup
-	chmod +x ./sup
+	opam exec -- dune build --profile release ./shelm.exe
+	cp _build/default/shelm.exe ./shelm
+	chmod +x ./shelm

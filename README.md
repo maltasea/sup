@@ -1,13 +1,13 @@
-# sup
+# shelm
 
-`sup` is a small scripting language interpreter.
+`shelm` is a small scripting language interpreter.
 
 Main entrypoints:
-- Perl: `perl sup.pl <script.sup>`
-- OCaml build: `dune build ./sup.exe` then `_build/default/sup.exe <script.sup>`
+- Perl: `perl shelm.pl <script.shlm>`
+- OCaml build: `dune build ./shelm.exe` then `_build/default/shelm.exe <script.shlm>`
 
 Release OCaml binary to repo root:
-- `make release-ocaml` (writes `./sup`)
+- `make release-ocaml` (writes `./shelm`)
 
 Execution model:
 - line-based parse (one line = one statement, except block constructs)
@@ -52,7 +52,7 @@ Supported symbol characters include:
 
 Examples:
 
-```sup
+```shelm
 set $host = "localhost"   # local
 $DB_HOST = "localhost"    # global
 set @items = ["a", "b"]   # local array
@@ -63,7 +63,7 @@ set @ARGS = ["x", "y"]    # global array
 
 You can declare globals explicitly:
 
-```sup
+```shelm
 global $DB_HOST required
 global $DB_PORT default("5432")
 ```
@@ -80,7 +80,7 @@ Function recursion must be explicit:
 
 Examples:
 
-```sup
+```shelm
 defun add1($x)
   return(add($x, 1))
 end
@@ -102,7 +102,7 @@ Current naming direction:
 Use static mode to verify global declarations/assignments without executing the script:
 
 ```sh
-perl sup.pl --check main.sup
+perl shelm.pl --check main.shlm
 ```
 
 `--check` enforces:
@@ -120,7 +120,7 @@ Limitation:
 Use strict mode to enforce global declarations at runtime:
 
 ```sh
-perl sup.pl --strict-globals main.sup
+perl shelm.pl --strict-globals main.shlm
 ```
 
 `--strict-globals` does:
@@ -138,14 +138,14 @@ Built-in globals predeclared by the interpreter:
 
 Load modules:
 
-```sup
+```shelm
 load("moda")
 ```
 
 `load()` behavior:
 - modules are executed once per resolved file path (subsequent `load(...)` calls reuse loaded module state)
 - cyclic loads fail fast with a clear dependency chain
-- loading two different files with the same module basename (for example two `alpha.sup` files) fails with a module-name collision error
+- loading two different files with the same module basename (for example two `alpha.shlm` files) fails with a module-name collision error
 
 Module-local symbols are namespaced:
 - function call: `moda/who("x")`
@@ -159,7 +159,7 @@ Main module symbols stay callable without module prefix.
 
 Use `run` for one command (argv form, no shell parsing):
 
-```sup
+```shelm
 set %r = run(["/bin/sh", "-c", "printf ok; printf warn 1>&2"])
 print(dict-get(%r, "code"))
 print(dict-get(%r, "out"))
@@ -168,7 +168,7 @@ print(dict-get(%r, "err"))
 
 Use `pipe` for command pipelines:
 
-```sup
+```shelm
 set %r = pipe([["/bin/sh", "-c", "printf hi"], ["tr", "a-z", "A-Z"]])
 print(dict-get(%r, "code"))
 print(dict-get(%r, "out"))
@@ -213,11 +213,11 @@ RUN_OCAML_TESTS=1 ./tests/run-tests.sh
 ```
 
 Key test suites:
-- `tests/sup.t`
+- `tests/shelm.t`
 - `tests/conformance.t`
 - `tests/static-check.t`
 - `tests/strict-globals.t`
-- `tests/sup-ocaml.t`
+- `tests/shelm-ocaml.t`
 
 ## Benchmark
 
@@ -225,7 +225,7 @@ Quick call-overhead benchmark:
 
 ```sh
 perl bench/call-overhead.pl --impl perl --calls 20000 --iters 5 --warmup 1
-opam exec -- dune build ./sup.exe
+opam exec -- dune build ./shelm.exe
 opam exec -- perl bench/call-overhead.pl --impl ocaml --calls 20000 --iters 5 --warmup 1
 ```
 

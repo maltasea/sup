@@ -1,6 +1,6 @@
-# The sup Language
+# The shelm Language
 
-This document describes implemented sup syntax plus the current Mini Shelm Light surface supported by the Perl and OCaml runtimes.
+This document describes implemented shelm syntax plus the current Mini Shelm Light surface supported by the Perl and OCaml runtimes.
 
 ## Program Model
 
@@ -84,7 +84,7 @@ Supported expression forms:
 
 ### if / when / unless
 
-```sup
+```shelm
 if cond
   ...
 else
@@ -97,7 +97,7 @@ end
 
 ### switch / case
 
-```sup
+```shelm
 switch expr
 case value1
   ...
@@ -115,7 +115,7 @@ end
 
 ### while
 
-```sup
+```shelm
 while cond
   ...
 end
@@ -126,13 +126,13 @@ end
 
 ### foreach / fori
 
-```sup
+```shelm
 foreach $v @items
   ...
 end
 ```
 
-```sup
+```shelm
 fori $v @items
   ...
 end

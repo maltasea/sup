@@ -17,8 +17,8 @@ GetOptions(
     'iters=i'  => \$iters,
     'warmup=i' => \$warmup,
     'impl=s'   => \$impl,
-    'sup=s'   => \$sup_path,
-) or die "Usage: perl bench/call-overhead.pl [--calls N] [--iters N] [--warmup N] [--impl perl|ocaml] [--sup PATH]\n";
+    'shelm=s'   => \$sup_path,
+) or die "Usage: perl bench/call-overhead.pl [--calls N] [--iters N] [--warmup N] [--impl perl|ocaml] [--shelm PATH]\n";
 
 die "--calls must be > 0\n" unless $calls > 0;
 die "--iters must be > 0\n" unless $iters > 0;
@@ -28,33 +28,33 @@ die "--impl must be one of: perl, ocaml\n" unless $impl eq 'perl' || $impl eq 'o
 my $root = File::Spec->rel2abs(File::Spec->catdir(File::Spec->curdir()));
 if (!defined $sup_path || $sup_path eq '') {
     $sup_path = $impl eq 'perl'
-        ? File::Spec->catfile($root, 'sup.pl')
-        : File::Spec->catfile($root, '_build', 'default', 'sup.exe');
+        ? File::Spec->catfile($root, 'shelm.pl')
+        : File::Spec->catfile($root, '_build', 'default', 'shelm.exe');
 }
 die "Cannot find interpreter at $sup_path\n" unless -f $sup_path;
 my $runner = $impl eq 'perl' ? ['perl', $sup_path] : [$sup_path];
 
 my $tmp = tempdir(CLEANUP => 1);
-my $program_no_fn = File::Spec->catfile($tmp, 'no-function.sup');
-my $program_fn = File::Spec->catfile($tmp, 'with-function.sup');
+my $program_no_fn = File::Spec->catfile($tmp, 'no-function.shlm');
+my $program_fn = File::Spec->catfile($tmp, 'with-function.shlm');
 
 my $ones = join(',', (1) x $calls);
 
 write_program(
     $program_no_fn,
-    <<"SUP"
+    <<"SHELM"
 set \@nums = [$ones]
 set \$sum = 0
 foreach \$n \@nums
   set \$sum = add(\$sum, add(\$n, 1))
 end
 print(\$sum)
-SUP
+SHELM
 );
 
 write_program(
     $program_fn,
-    <<"SUP"
+    <<"SHELM"
 defun inc(\$x)
   return(add(\$x, 1))
 end
@@ -64,7 +64,7 @@ foreach \$n \@nums
   set \$sum = add(\$sum, inc(\$n))
 end
 print(\$sum)
-SUP
+SHELM
 );
 
 my $base = bench_case('baseline(no-function)', $program_no_fn, $warmup, $iters, $runner);
