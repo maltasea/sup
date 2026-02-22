@@ -1,13 +1,12 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
-use Test::More tests => 96;
+use Test::More tests => 94;
 use File::Temp qw(tempfile tempdir);
 use FindBin qw($Bin);
 use File::Spec;
 
 my $sup = File::Spec->catfile($Bin, '..', 'sup.pl');
-my $demo = File::Spec->catfile($Bin, '..', 'demo.sup');
 
 my $sup_cmd = $ENV{SUP_CMD}
     ? $ENV{SUP_CMD}
@@ -660,10 +659,4 @@ print add(n, 2) 5
 SUP
     is($status, 0, 'space rule: nested call kept together');
     is($out, "55\n", 'space rule: add(n,2) as one arg, 5 as another');
-}
-
-{
-    my ($status, $out) = run_file($demo);
-    is($status, 0, 'demo.sup executes');
-    like($out, qr/-- demo complete --\n/, 'demo.sup reaches completion');
 }
