@@ -369,8 +369,16 @@ let re_end = Str.regexp {|^end\([ 	].*\)?$|}
 let re_else = Str.regexp {|^else\([ 	].*\)?$|}
 let re_global_default = Str.regexp {|^default[ 	]*(\(.*\))[ 	]*$|}
 
-let re_light_defun =
-  Str.regexp {|^defun[ 	]+\([A-Za-z_][A-Za-z0-9_]*\)\([ 	]*\[\([^]]*\)\]\)?[ 	]+do$|}
+let re_light_defun_prefix =
+  Str.regexp {|^defun[ 	]+\([A-Za-z_][A-Za-z0-9_]*\)\(.*\)$|}
+let re_light_defun_parens =
+  Str.regexp {|^[ 	]*(\([^)]*\))[ 	]+do$|}
+let re_light_defun_brackets =
+  Str.regexp {|^[ 	]*\[\([^]]*\)\][ 	]+do$|}
+let re_light_defun_no_params =
+  Str.regexp {|^[ 	]+do$|}
+let re_light_defun_bare_params =
+  Str.regexp {|^[ 	]+\(.*[^ 	]\)[ 	]+do$|}
 let re_light_if_then = Str.regexp {|^if[ 	]+\(.*\)[ 	]+then$|}
 let re_light_elif_then = Str.regexp {|^elif[ 	]+\(.*\)[ 	]+then$|}
 let re_light_while_do = Str.regexp {|^while[ 	]+\(.*\)[ 	]+do$|}
@@ -382,10 +390,10 @@ let re_light_assign =
   Str.regexp {|^\([A-Za-z_][A-Za-z0-9_]*\)[ 	]*=[ 	]*\(.*\)$|}
 let re_light_index_assign =
   Str.regexp {|^\([A-Za-z_][A-Za-z0-9_]*\)[ 	]*\[[ 	]*\(.*\)[ 	]*\][ 	]*=[ 	]*\(.*\)$|}
-let re_light_call_stmt =
-  Str.regexp {|^\([A-Za-z_][A-Za-z0-9_]*\)[ 	]*([ 	]*\(.*\)[ 	]*)$|}
 let re_light_bare_call =
   Str.regexp {|^\([A-Za-z_][A-Za-z0-9_]*\)[ 	]+\(.+\)$|}
+let re_light_call_no_space =
+  Str.regexp {|^\([A-Za-z_][A-Za-z0-9_]*\)(|}
 let re_light_return =
   Str.regexp {|^return\([ 	]+\(.*\)\)?$|}
 let re_light_fun_assign_let_def =
@@ -1552,7 +1560,7 @@ let opens_block_for_light line =
   || re_matches re_light_if_then line
   || re_matches re_light_while_do line
   || re_matches re_light_foreach_do line
-  || re_matches re_light_defun line
+  || re_matches re_light_defun_prefix line
   || re_matches re_light_fun_assign_let_def line
   || re_matches re_light_fun_assign line
 
@@ -1585,6 +1593,154 @@ let light_safe_call_candidate line =
   && (try ignore (Str.search_forward re_light_true_false_call line 0); false with Not_found -> true)
   && (try ignore (String.index line '\\'); false with Not_found -> true)
 
+let extract_balanced_parens str =
+  if String.length str = 0 || str.[0] <> '(' then
+    failwith "extract_balanced_parens: expected '(' at start";
+  let len = String.length str in
+  let depth = ref 0 in
+  let in_quote = ref false in
+  let escaped = ref false in
+  let result = ref None in
+  let i = ref 0 in
+  while !i < len && !result = None do
+    let ch = str.[!i] in
+    if !in_quote && !escaped then begin
+      escaped := false
+    end else if !in_quote && ch = '\\' then begin
+      escaped := true
+    end else if ch = '"' then begin
+      in_quote := not !in_quote
+    end else if not !in_quote then begin
+      if ch = '(' then
+        incr depth
+      else if ch = ')' then begin
+        decr depth;
+        if !depth = 0 then begin
+          let inner = String.sub str 1 (!i - 1) in
+          let rest = String.sub str (!i + 1) (len - !i - 1) in
+          result := Some (inner, rest)
+        end
+      end
+    end;
+    incr i
+  done;
+  match !result with
+  | Some r -> r
+  | None -> failwith ("Unbalanced parentheses in: '" ^ str ^ "'")
+
+let light_classify_parens content =
+  let len = String.length content in
+  let depth = ref 0 in
+  let in_quote = ref false in
+  let escaped = ref false in
+  let found_comma = ref false in
+  let i = ref 0 in
+  while !i < len && not !found_comma do
+    let ch = content.[!i] in
+    if !in_quote && !escaped then
+      escaped := false
+    else if !in_quote && ch = '\\' then
+      escaped := true
+    else if ch = '"' then
+      in_quote := not !in_quote
+    else if not !in_quote then begin
+      if ch = '(' || ch = '[' || ch = '{' then
+        incr depth
+      else if ch = ')' || ch = ']' || ch = '}' then
+        decr depth
+      else if ch = ',' && !depth = 0 then
+        found_comma := true
+    end;
+    incr i
+  done;
+  if !found_comma then "arglist" else "expr"
+
+let has_infix_ops_at_depth0 content =
+  let tokens = try light_tokenize_expr content with _ -> [LTEof] in
+  let depth = ref 0 in
+  let prev_is_value = ref false in
+  let found = ref false in
+  List.iter (fun tok ->
+    if not !found then
+      match tok with
+      | LTPunct c when c = '(' || c = '[' || c = '{' ->
+        incr depth; prev_is_value := false
+      | LTPunct c when c = ')' || c = ']' || c = '}' ->
+        decr depth; prev_is_value := true
+      | LTPunct _ ->
+        prev_is_value := false
+      | LTOp _ when !depth = 0 && !prev_is_value ->
+        found := true
+      | LTIdent _ | LTNum _ | LTStr _ | LTBool _ | LTNil | LTKeywordLit _ ->
+        prev_is_value := true
+      | _ ->
+        prev_is_value := false
+  ) tokens;
+  !found
+
+let light_collect_args tail =
+  let tail = String.trim tail in
+  if tail = "" then []
+  else begin
+    let len = String.length tail in
+    let buf = Buffer.create 32 in
+    let raw_tokens = ref [] in
+    let depth = ref 0 in
+    let in_quote = ref false in
+    let escaped = ref false in
+    for i = 0 to len - 1 do
+      let ch = tail.[i] in
+      if !in_quote && !escaped then begin
+        escaped := false;
+        Buffer.add_char buf ch
+      end else if !in_quote && ch = '\\' then begin
+        escaped := true;
+        Buffer.add_char buf ch
+      end else if ch = '"' then begin
+        in_quote := not !in_quote;
+        Buffer.add_char buf ch
+      end else if !in_quote then
+        Buffer.add_char buf ch
+      else if ch = '(' || ch = '[' || ch = '{' then begin
+        incr depth;
+        Buffer.add_char buf ch
+      end else if ch = ')' || ch = ']' || ch = '}' then begin
+        decr depth;
+        Buffer.add_char buf ch
+      end else if !depth = 0 && (ch = ',' || ch = ' ' || ch = '\t') then begin
+        let s = Buffer.contents buf in
+        if String.trim s <> "" then
+          raw_tokens := s :: !raw_tokens;
+        Buffer.clear buf
+      end else
+        Buffer.add_char buf ch
+    done;
+    let last = Buffer.contents buf in
+    if String.trim last <> "" then
+      raw_tokens := last :: !raw_tokens;
+    let raw_tokens = List.rev !raw_tokens in
+    (* Post-process: splice arglist parens, keep expr parens whole *)
+    let args = ref [] in
+    List.iter (fun tok ->
+      let trimmed = String.trim tok in
+      if String.length trimmed > 0 && trimmed.[0] = '('
+         && not (is_light_ident (String.sub trimmed 0 1)) then begin
+        match (try Some (extract_balanced_parens trimmed) with Failure _ -> None) with
+        | Some (inner, rest) when String.trim rest = "" ->
+          let cls = light_classify_parens inner in
+          if cls = "arglist" then begin
+            let parts = parse_arglist inner in
+            args := List.rev_append (List.rev parts) !args
+          end else
+            args := trimmed :: !args
+        | _ ->
+          args := trimmed :: !args
+      end else
+        args := trimmed :: !args
+    ) raw_tokens;
+    List.rev !args
+  end
+
 let light_fun_block_seq = ref 0
 
 let rec normalize_light_program lines =
@@ -1598,10 +1754,33 @@ let rec normalize_light_program lines =
       let line = String.trim raw in
       if is_blank_or_comment line then
         loop (i + 1) stack tmp_id (raw :: acc)
-      else if re_matches re_light_defun line then
+      else if re_matches re_light_defun_prefix line then
         let name = Str.matched_group 1 line in
-        let raw_params = try Str.matched_group 3 line with Not_found -> "" in
-        let params = parse_light_param_list raw_params "defun" in
+        let rest = Str.matched_group 2 line in
+        let params =
+          if re_matches re_light_defun_parens rest then
+            parse_light_param_list (Str.matched_group 1 rest) "defun"
+          else if re_matches re_light_defun_brackets rest then
+            parse_light_param_list (Str.matched_group 1 rest) "defun"
+          else if re_matches re_light_defun_no_params rest then
+            []
+          else if re_matches re_light_defun_bare_params rest then
+            let params_str = Str.matched_group 1 rest in
+            let parts =
+              String.split_on_char ' ' params_str
+              |> List.concat_map (String.split_on_char ',')
+              |> List.concat_map (String.split_on_char '\t')
+              |> List.map String.trim
+              |> List.filter (fun s -> s <> "")
+            in
+            List.iter (fun p ->
+              if not (is_light_ident p) then
+                failwith ("Invalid parameter name '" ^ p ^ "' in defun")
+            ) parts;
+            parts
+          else
+            failwith ("Invalid defun syntax: " ^ line)
+        in
         let plist = String.concat ", " (List.map (fun p -> "$" ^ p) params) in
         loop (i + 1) (LightOther :: stack) tmp_id (("defun " ^ name ^ "(" ^ plist ^ ")") :: acc)
       else if re_matches re_light_if_then line then
@@ -1702,20 +1881,51 @@ let rec normalize_light_program lines =
         let name = Str.matched_group 1 line in
         let expr = Str.matched_group 2 line in
         loop (i + 1) stack tmp_id (("set $" ^ name ^ " = " ^ maybe_normalize_light_expr expr) :: acc)
-      else if re_matches re_light_call_stmt line && light_safe_call_candidate line then
-        loop (i + 1) stack tmp_id (maybe_normalize_light_expr line :: acc)
+      (* Case A: name(...) — no space before paren (space rule) *)
+      else if re_matches re_light_call_no_space line then
+        let head = Str.matched_group 1 line in
+        let light_control_keywords =
+          [ "if"; "elif"; "while"; "foreach"; "when"; "unless"; "switch"; "fori" ] in
+        let light_all_keywords =
+          [ "if"; "elif"; "else"; "while"; "foreach"; "def"; "let"; "defun"; "fun";
+            "return"; "break"; "continue"; "end"; "alias"; "global"; "when"; "unless";
+            "switch"; "case"; "fori"; "set"; "rec"; "sub"; "defn" ] in
+        if List.mem head light_control_keywords then
+          failwith ("Syntax error: '" ^ head ^ "(...)' is not allowed — use '" ^ head ^ " ...' with a space")
+        else if List.mem head light_all_keywords then
+          loop (i + 1) stack tmp_id (raw :: acc)
+        else begin
+          let after_head = String.sub line (String.length head) (String.length line - String.length head) in
+          match (try Some (extract_balanced_parens after_head) with Failure _ -> None) with
+          | Some (inner, rest) when String.trim rest = "" ->
+            let candidate = head ^ "(" ^ inner ^ ")" in
+            if light_safe_call_candidate candidate then begin
+              let cls = light_classify_parens inner in
+              if cls = "expr" && has_infix_ops_at_depth0 inner then
+                failwith ("Space rule: use '" ^ head ^ " (" ^ inner ^ ")' instead of '" ^ head ^ "(" ^ inner ^ ")' for infix expressions");
+              loop (i + 1) stack tmp_id (maybe_normalize_light_expr candidate :: acc)
+            end else
+              loop (i + 1) stack tmp_id (raw :: acc)
+          | _ ->
+            loop (i + 1) stack tmp_id (raw :: acc)
+        end
+      (* Case B: name tail — space after name (command mode, args collected) *)
       else if re_matches re_light_bare_call line then
         let head = Str.matched_group 1 line in
         let tail = Str.matched_group 2 line in
-        if List.mem head [ "if"; "elif"; "else"; "while"; "foreach"; "def"; "let"; "defun"; "fun";
-                           "return"; "break"; "continue"; "end"; "alias"; "global"; "when"; "unless";
-                           "switch"; "case"; "fori"; "set"; "rec"; "sub"; "defn" ] then
+        let light_all_keywords =
+          [ "if"; "elif"; "else"; "while"; "foreach"; "def"; "let"; "defun"; "fun";
+            "return"; "break"; "continue"; "end"; "alias"; "global"; "when"; "unless";
+            "switch"; "case"; "fori"; "set"; "rec"; "sub"; "defn" ] in
+        if List.mem head light_all_keywords then
           loop (i + 1) stack tmp_id (raw :: acc)
         else
-          let candidate = head ^ "(" ^ tail ^ ")" in
-          if light_safe_call_candidate candidate then
-            loop (i + 1) stack tmp_id (maybe_normalize_light_expr candidate :: acc)
-          else
+          let whole = head ^ " " ^ tail in
+          if light_safe_call_candidate whole then begin
+            let args = light_collect_args tail in
+            let normed = List.map maybe_normalize_light_expr args in
+            loop (i + 1) stack tmp_id ((head ^ "(" ^ String.concat ", " normed ^ ")") :: acc)
+          end else
             loop (i + 1) stack tmp_id (raw :: acc)
       else
         loop (i + 1) stack tmp_id (raw :: acc)
