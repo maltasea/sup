@@ -3381,6 +3381,32 @@ let register_builtins () =
     with Pcre.Error _ ->
       failwith "rx-sub: invalid regex pattern");
 
+  add "replace" (fun a ->
+    let text = nth_str a 0 in
+    let replacement = nth_str a 2 in
+    let rex =
+      match nth_val a 1 with
+      | Rex r -> r
+      | v ->
+        (try Pcre.regexp (to_str v)
+         with Pcre.Error _ -> failwith "replace: invalid regex pattern")
+    in
+    (try Str (Pcre.replace_first ~rex ~templ:replacement text)
+     with Pcre.Error _ -> failwith "replace: invalid regex pattern"));
+
+  add "replace-all" (fun a ->
+    let text = nth_str a 0 in
+    let replacement = nth_str a 2 in
+    let rex =
+      match nth_val a 1 with
+      | Rex r -> r
+      | v ->
+        (try Pcre.regexp (to_str v)
+         with Pcre.Error _ -> failwith "replace-all: invalid regex pattern")
+    in
+    (try Str (Pcre.replace ~rex ~templ:replacement text)
+     with Pcre.Error _ -> failwith "replace-all: invalid regex pattern"));
+
   (* Array *)
   add "array" (fun a -> Arr (dynarr_of_list a));
   add "push" (fun a ->
@@ -4235,6 +4261,9 @@ let register_builtins () =
   alias "text->len" "length";
   alias "text->upper" "upper";
   alias "text->lower" "lower";
+  alias "text->replace" "replace";
+  alias "text->replace-all" "replace-all";
+  alias "grep" "filter";
 
   alias "array->len" "len";
   alias "array->get" "get";
