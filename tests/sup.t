@@ -9,13 +9,17 @@ use File::Spec;
 my $sup = File::Spec->catfile($Bin, '..', 'sup.pl');
 my $demo = File::Spec->catfile($Bin, '..', 'demo.sup');
 
+my $sup_cmd = $ENV{SUP_CMD}
+    ? $ENV{SUP_CMD}
+    : qq{perl "$sup"};
+
 sub run_sup {
     my ($program) = @_;
     my ($fh, $path) = tempfile(SUFFIX => '.sup', UNLINK => 1);
     print {$fh} $program;
     close $fh;
 
-    my $cmd = qq{perl "$sup" "$path" 2>&1};
+    my $cmd = qq{$sup_cmd "$path" 2>&1};
     my $out = `$cmd`;
     my $status = $? >> 8;
     return ($status, $out);
@@ -23,7 +27,7 @@ sub run_sup {
 
 sub run_file {
     my ($path) = @_;
-    my $cmd = qq{perl "$sup" "$path" 2>&1};
+    my $cmd = qq{$sup_cmd "$path" 2>&1};
     my $out = `$cmd`;
     my $status = $? >> 8;
     return ($status, $out);

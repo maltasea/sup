@@ -1730,7 +1730,7 @@ let light_collect_args tail =
           let cls = light_classify_parens inner in
           if cls = "arglist" then begin
             let parts = parse_arglist inner in
-            args := List.rev_append (List.rev parts) !args
+            args := List.rev_append parts !args
           end else
             args := trimmed :: !args
         | _ ->
@@ -1757,13 +1757,13 @@ let rec normalize_light_program lines =
       else if re_matches re_light_defun_prefix line then
         let name = Str.matched_group 1 line in
         let rest = Str.matched_group 2 line in
-        let params =
+        let params_opt =
           if re_matches re_light_defun_parens rest then
-            parse_light_param_list (Str.matched_group 1 rest) "defun"
+            Some (parse_light_param_list (Str.matched_group 1 rest) "defun")
           else if re_matches re_light_defun_brackets rest then
-            parse_light_param_list (Str.matched_group 1 rest) "defun"
+            Some (parse_light_param_list (Str.matched_group 1 rest) "defun")
           else if re_matches re_light_defun_no_params rest then
-            []
+            Some []
           else if re_matches re_light_defun_bare_params rest then
             let params_str = Str.matched_group 1 rest in
             let parts =
@@ -1773,16 +1773,17 @@ let rec normalize_light_program lines =
               |> List.map String.trim
               |> List.filter (fun s -> s <> "")
             in
-            List.iter (fun p ->
-              if not (is_light_ident p) then
-                failwith ("Invalid parameter name '" ^ p ^ "' in defun")
-            ) parts;
-            parts
+            if List.for_all is_light_ident parts then Some parts
+            else None
           else
-            failwith ("Invalid defun syntax: " ^ line)
+            None
         in
-        let plist = String.concat ", " (List.map (fun p -> "$" ^ p) params) in
-        loop (i + 1) (LightOther :: stack) tmp_id (("defun " ^ name ^ "(" ^ plist ^ ")") :: acc)
+        (match params_opt with
+        | Some params ->
+          let plist = String.concat ", " (List.map (fun p -> "$" ^ p) params) in
+          loop (i + 1) (LightOther :: stack) tmp_id (("defun " ^ name ^ "(" ^ plist ^ ")") :: acc)
+        | None ->
+          loop (i + 1) stack tmp_id (raw :: acc))
       else if re_matches re_light_if_then line then
         let cond = Str.matched_group 1 line in
         loop (i + 1) (LightIf 0 :: stack) tmp_id (("if " ^ maybe_normalize_light_expr cond) :: acc)
