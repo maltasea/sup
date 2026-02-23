@@ -1,4 +1,4 @@
-.PHONY: check test bench bench-compare bench-guard bench-call-perl bench-call-ocaml release-ocaml
+.PHONY: check test bench bench-compare bench-guard bench-call-perl bench-call-ocaml release-ocaml docs-site
 
 BENCH_CALLS ?= 10000
 BENCH_DEPTH ?= 300
@@ -62,3 +62,6 @@ release-ocaml:
 	opam exec -- dune build --profile release ./shelm.exe
 	cp _build/default/shelm.exe ./shelm
 	chmod +x ./shelm
+
+docs-site:
+	./scripts/build-doc-site.pl docs/language-guide.md docs/site/index.html

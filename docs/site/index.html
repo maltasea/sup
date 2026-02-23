@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Esca Language Guide</title>
+  <meta name="description" content="Esca language learning guide">
+  <style>
+    :root {
+      --bg-1: #fff4de;
+      --bg-2: #eaf7ff;
+      --panel: #ffffffd9;
+      --ink: #1a1f2b;
+      --ink-soft: #4f5a6b;
+      --accent: #0f766e;
+      --accent-2: #c2410c;
+      --line: #d8dee8;
+      --code-bg: #172030;
+      --code-ink: #eff5ff;
+      --shadow: 0 18px 44px rgba(15, 23, 42, 0.16);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 620px at 7% -8%, #ffd89e 0%, transparent 55%),
+        radial-gradient(1000px 560px at 96% -12%, #a5d7ff 0%, transparent 52%),
+        linear-gradient(135deg, var(--bg-1), var(--bg-2));
+      min-height: 100vh;
+    }
+    .shell {
+      width: min(1160px, 94vw);
+      margin: 40px auto 56px;
+      animation: rise 560ms ease-out both;
+    }
+    .hero {
+      background: linear-gradient(145deg, #ffffff, #fff9ee);
+      border: 1px solid #f2dcc2;
+      border-radius: 22px;
+      padding: 26px 30px;
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -80px;
+      top: -66px;
+      width: 240px;
+      height: 240px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 38% 36%, #ffb45f, #ff8d41);
+      opacity: .14;
+      pointer-events: none;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-family: "Sora", "Trebuchet MS", sans-serif;
+      letter-spacing: -0.02em;
+      font-size: clamp(1.8rem, 3.4vw, 2.8rem);
+      line-height: 1.1;
+    }
+    .tagline {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 1.03rem;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      gap: 22px;
+      margin-top: 20px;
+    }
+    .toc, .content {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(4px);
+    }
+    .toc {
+      position: sticky;
+      top: 16px;
+      align-self: start;
+      padding: 16px 16px 18px;
+    }
+    .toc h2 {
+      margin: 0 0 10px;
+      font-size: 0.95rem;
+      text-transform: uppercase;
+      letter-spacing: 0.11em;
+      color: var(--accent-2);
+      font-family: "Sora", "Trebuchet MS", sans-serif;
+    }
+    .toc ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 8px;
+    }
+    .toc a {
+      color: #1f2f45;
+      text-decoration: none;
+      font-size: 0.95rem;
+      line-height: 1.25;
+      border-left: 3px solid transparent;
+      padding-left: 8px;
+      transition: border-color .18s ease, color .18s ease, transform .18s ease;
+      display: inline-block;
+    }
+    .toc a:hover {
+      color: var(--accent);
+      border-left-color: var(--accent);
+      transform: translateX(2px);
+    }
+    .toc-sub a { font-size: 0.9rem; opacity: 0.86; }
+    .content {
+      padding: 24px 28px 34px;
+      overflow: hidden;
+    }
+    .content h2 {
+      margin: 28px 0 10px;
+      font-family: "Sora", "Trebuchet MS", sans-serif;
+      font-size: 1.42rem;
+      color: #0f2038;
+    }
+    .content h3 {
+      margin: 20px 0 8px;
+      font-family: "Sora", "Trebuchet MS", sans-serif;
+      font-size: 1.16rem;
+      color: #153357;
+    }
+    .content p, .content li {
+      color: #273445;
+      line-height: 1.6;
+      font-size: 1rem;
+    }
+    .content p {
+      margin: 0 0 12px;
+    }
+    .content ul, .content ol {
+      margin: 6px 0 14px 24px;
+      padding: 0;
+    }
+    code {
+      font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+      background: #edf2f9;
+      border: 1px solid #d6e1ef;
+      border-radius: 6px;
+      padding: 0.08rem 0.35rem;
+      font-size: 0.92em;
+      color: #14212f;
+      white-space: nowrap;
+    }
+    pre {
+      margin: 10px 0 16px;
+      padding: 14px 16px;
+      border-radius: 14px;
+      background: linear-gradient(160deg, #131d2f, #1e2a42);
+      border: 1px solid #2a3a59;
+      color: var(--code-ink);
+      overflow-x: auto;
+    }
+    pre code {
+      background: none;
+      border: 0;
+      color: inherit;
+      padding: 0;
+      white-space: pre;
+      font-size: 0.92rem;
+    }
+    @media (max-width: 940px) {
+      .layout { grid-template-columns: 1fr; }
+      .toc {
+        position: relative;
+        top: 0;
+      }
+      .content { padding: 20px 18px 26px; }
+    }
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <h1>Esca Language Guide</h1>
+      <p class="tagline">A proglang for lazy people.</p>
+    </header>
+    <section class="layout">
+      <aside class="toc">
+        <h2>Contents</h2>
+        <ul>
+  <li><a href="#1-quick-start">1. Quick Start</a></li>
+  <li><a href="#2-program-model">2. Program Model</a></li>
+  <li><a href="#3-names-and-scope">3. Names And Scope</a></li>
+  <li><a href="#4-values">4. Values</a></li>
+  <li><a href="#5-statements">5. Statements</a></li>
+  <li><a href="#6-expressions">6. Expressions</a></li>
+  <li><a href="#7-functions">7. Functions</a></li>
+  <li><a href="#8-modules">8. Modules</a></li>
+  <li><a href="#9-process-and-shell-helpers">9. Process And Shell Helpers</a></li>
+  <li><a href="#10-globals-validation-modes">10. Globals Validation Modes</a></li>
+  <li><a href="#11-builtin-naming-direction">11. Builtin Naming Direction</a></li>
+  <li><a href="#12-where-to-learn-by-example">12. Where To Learn By Example</a></li>
+</ul>
+
+      </aside>
+      <article class="content">
+        <p>This is the canonical source for learning Esca.</p>
+<p>Esca source files use the <code>.es</code> extension.</p>
+<h2 id="1-quick-start">1. Quick Start</h2>
+<p>Run Esca with the Perl runtime:</p>
+<pre><code class="lang-sh">perl shelm.pl hello.es</code></pre>
+<p>Build and run the OCaml runtime:</p>
+<pre><code class="lang-sh">dune build ./shelm.exe
+_build/default/shelm.exe hello.es</code></pre>
+<h2 id="2-program-model">2. Program Model</h2>
+<ul>
+<li>Line-oriented parser: one statement per line (except block forms).</li>
+<li>Blank lines and <code># ...</code> comment lines are ignored.</li>
+<li>Blocks close with <code>end</code>.</li>
+<li>Scripts and modules are compiled into an AST before execution.</li>
+</ul>
+<h2 id="3-names-and-scope">3. Names And Scope</h2>
+<ul>
+<li>Locals use lowercase symbols: <code>$name</code>, <code>@items</code>, <code>%cfg</code>.</li>
+<li>Globals use uppercase symbols: <code>$DB_HOST</code>, <code>@ARGS</code>, <code>%ENV</code>.</li>
+<li>Symbols may include <code>-</code>, <code>-&gt;</code>, and <code>?</code>.</li>
+<li>Module-qualified symbols use <code>module/name</code> (example: <code>$mod/value</code>).</li>
+</ul>
+<p>Example:</p>
+<pre><code class="lang-esca">set $host = "localhost"
+$DB_HOST = "localhost"
+set @items = ["a", "b"]
+set @ARGS = ["x", "y"]</code></pre>
+<h2 id="4-values">4. Values</h2>
+<p>Core value types:</p>
+<ul>
+<li>string</li>
+<li>number</li>
+<li>nil</li>
+<li>array</li>
+<li>dict</li>
+<li>regex</li>
+</ul>
+<p>Truthy values are everything except <code>nil</code>, empty string, <code>"0"</code>, and numeric <code>0</code>.</p>
+<h2 id="5-statements">5. Statements</h2>
+<p>Core statement forms:</p>
+<ul>
+<li><code>set $x = expr</code></li>
+<li><code>set @xs = expr</code></li>
+<li><code>set %d = expr</code></li>
+<li><code>def $x = expr</code> and <code>let $x = expr</code> (immutable-direction aliases)</li>
+<li>global assignment: <code>$X = expr</code></li>
+<li>function declaration: <code>defun name(...) ... end</code></li>
+<li>recursive function declaration: <code>rec name(...) ... end</code></li>
+<li>function call as statement: <code>print("ok")</code></li>
+<li><code>return expr</code>, <code>break</code>, <code>continue</code></li>
+</ul>
+<p>Additional statement forms supported in both runtimes:</p>
+<ul>
+<li><code>if &lt;expr&gt; then ... [elif &lt;expr&gt; then ...] [else ...] end</code></li>
+<li><code>while &lt;expr&gt; do ... end</code></li>
+<li><code>foreach &lt;name&gt; in &lt;expr&gt; do ... end</code></li>
+<li><code>&lt;name&gt; = &lt;expr&gt;</code></li>
+<li><code>&lt;name&gt;[&lt;idx&gt;] = &lt;expr&gt;</code></li>
+</ul>
+<h2 id="6-expressions">6. Expressions</h2>
+<p>Common forms:</p>
+<ul>
+<li>literals: <code>"txt"</code>, <code>123</code>, <code>3.14</code>, <code>nil</code></li>
+<li>arrays: <code>[1, "a", $x]</code></li>
+<li>dicts: <code>{name: "bernd", age: 88}</code></li>
+<li>reads: <code>$x</code>, <code>@xs</code>, <code>%d</code></li>
+<li>calls: <code>f(...)</code> and statement-call sugar <code>f a, b</code></li>
+<li>indexing: <code>x[i]</code></li>
+<li>operators: <code>== != &lt; &gt; &lt;= &gt;= + - * / % ++ and or not</code></li>
+<li>regex operators: <code>=~</code>, <code>!~</code>, and substitution <code>=~ s/a/b/g</code></li>
+<li>anonymous functions:</li>
+<li><code>fun [x] do ... end</code></li>
+<li><code>fun($x -&gt; expr)</code></li>
+<li><code>{$x -&gt; expr}</code></li>
+</ul>
+<h2 id="7-functions">7. Functions</h2>
+<p>Non-recursive:</p>
+<pre><code class="lang-esca">defun add1($x)
+  return(add($x, 1))
+end</code></pre>
+<p>Recursive:</p>
+<pre><code class="lang-esca">rec fact($n)
+  if lt($n, 2)
+    return(1)
+  end
+  return(mul($n, fact(sub($n, 1))))
+end</code></pre>
+<h2 id="8-modules">8. Modules</h2>
+<p>Load a module:</p>
+<pre><code class="lang-esca">load("moda")</code></pre>
+<p>Rules:</p>
+<ul>
+<li>Extensionless <code>load("name")</code> resolves to <code>.es</code>.</li>
+<li>Modules execute once per resolved file path.</li>
+<li>Cyclic loads fail with a dependency chain.</li>
+<li>Symbols can be referenced with <code>module/name</code> (for example <code>moda/who("x")</code>).</li>
+</ul>
+<h2 id="9-process-and-shell-helpers">9. Process And Shell Helpers</h2>
+<p>Prefer argv-based process APIs:</p>
+<pre><code class="lang-esca">set %r = run(["/bin/sh", "-c", "printf ok"])
+print(dict-get(%r, "code"))
+print(dict-get(%r, "out"))
+print(dict-get(%r, "err"))</code></pre>
+<p>Pipelines:</p>
+<pre><code class="lang-esca">set %r = pipe([["/bin/sh", "-c", "printf hi"], ["tr", "a-z", "A-Z"]])
+print(dict-get(%r, "out"))</code></pre>
+<p><code>sh(cmd)</code> exists for shell-string commands, but <code>run(...)</code> and <code>pipe(...)</code> are preferred.</p>
+<h2 id="10-globals-validation-modes">10. Globals Validation Modes</h2>
+<p>Static check:</p>
+<pre><code class="lang-sh">perl shelm.pl --check main.es</code></pre>
+<p>Strict runtime mode:</p>
+<pre><code class="lang-sh">perl shelm.pl --strict-globals main.es</code></pre>
+<p>Global declarations:</p>
+<pre><code class="lang-esca">global $DB_HOST required
+global $DB_PORT default("5432")</code></pre>
+<h2 id="11-builtin-naming-direction">11. Builtin Naming Direction</h2>
+<p>Preferred aliases:</p>
+<ul>
+<li>text: <code>text-&gt;len</code>, <code>text-&gt;upper</code>, <code>text-&gt;lower</code></li>
+<li>arrays: <code>array-&gt;len</code>, <code>array-&gt;get</code>, <code>array-&gt;push</code></li>
+<li>dicts: <code>dict-&gt;get</code>, <code>dict-&gt;set</code>, <code>dict-&gt;keys</code></li>
+<li>file/dir: <code>file-&gt;text</code>, <code>text-&gt;file</code>, <code>file-&gt;exists</code>, <code>dir-&gt;entries</code></li>
+<li>path: <code>path-&gt;join</code></li>
+</ul>
+<p>Legacy names remain available for compatibility where implemented.</p>
+<h2 id="12-where-to-learn-by-example">12. Where To Learn By Example</h2>
+<ul>
+<li><code>hello.es</code> for a minimal script</li>
+<li><code>tests/shelm.t</code> for feature-level behavior</li>
+<li><code>tests/conformance.t</code> for parser/runtime parity cases</li>
+<li><code>tests/static-check.t</code> and <code>tests/strict-globals.t</code> for global validation behavior</li>
+</ul>
+
+      </article>
+    </section>
+  </main>
+</body>
+</html>
